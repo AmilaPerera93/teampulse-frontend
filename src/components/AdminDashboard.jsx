@@ -6,15 +6,32 @@ import { useNavigate } from 'react-router-dom';
 import { Trash2, ExternalLink } from 'lucide-react';
 import Timer from './Timer';
 
+// Helper for formatting "14m" or "1h 2m"
+const formatMinutes = (ms) => {
+    const mins = Math.floor(ms / 60000);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    return `${hrs}h ${mins % 60}m`;
+};
+
 export default function AdminDashboard() {
   const { globalDate } = useDate();
   const navigate = useNavigate();
   const [tasks, setTasks] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // State to force re-render every minute to update "Break Duration" text
+  const [, setTick] = useState(0);
 
   // Pagination state
   const [expandedUsers, setExpandedUsers] = useState({});
+
+  useEffect(() => {
+    // Force UI update every 60 seconds so "Break (5m)" becomes "Break (6m)"
+    const interval = setInterval(() => setTick(t => t + 1), 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     // 1. Listen to Users (REAL-TIME STATUS UPDATES)
@@ -77,14 +94,21 @@ export default function AdminDashboard() {
         // --- STATUS LOGIC ---
         let displayStatus = user.onlineStatus;
         const lastSeenDate = user.lastSeen?.toDate();
-        
-        // CRASH DETECTION:
-        // If status says "Online" or "Idle", but they haven't pinged in > 3 minutes,
-        // assume they crashed or closed the tab without logging out.
-        // (We skip this check if they are on 'Break', as breaks can be long)
+        let statusText = displayStatus; // Text to show (e.g. "Break (14m)")
+
+        // 1. CRASH DETECTION (Only if not on Break)
         if ((displayStatus === 'Online' || displayStatus === 'Idle') && lastSeenDate) {
             const diff = (Date.now() - lastSeenDate.getTime()) / 1000 / 60; // diff in minutes
-            if (diff > 3) displayStatus = 'Offline';
+            if (diff > 3) {
+                displayStatus = 'Offline';
+                statusText = 'Offline';
+            }
+        }
+
+        // 2. BREAK DURATION CALCULATION
+        if (displayStatus === 'Break' && user.lastBreakStart) {
+            const breakDuration = Date.now() - user.lastBreakStart;
+            statusText = `Break (${formatMinutes(breakDuration)})`;
         }
 
         // Filter tasks for this user
@@ -131,13 +155,14 @@ export default function AdminDashboard() {
                         <h3 className="font-bold text-lg leading-tight group-hover:text-primary transition-colors">
                             {userName}
                         </h3>
+                        {/* DYNAMIC STATUS TEXT */}
                         <span className={`text-[10px] uppercase font-bold tracking-wider transition-colors duration-300 ${
                              displayStatus === 'Online' ? 'text-emerald-600' :
                              displayStatus === 'Idle' ? 'text-amber-500' :
                              displayStatus === 'Break' ? 'text-blue-600' :
                              'text-slate-400'
                         }`}>
-                            {displayStatus}
+                            {statusText}
                         </span>
                     </div>
                 </div>

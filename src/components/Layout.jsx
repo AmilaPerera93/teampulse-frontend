@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useDate } from '../contexts/DateContext'; 
 import { useTimer } from '../contexts/TimerContext'; 
-import { useActivityMonitor } from '../hooks/useActivityMonitor'; // Activity Monitor Hook
+import { useActivityMonitor } from '../hooks/useActivityMonitor'; 
 import AssignTaskModal from './AssignTaskModal';   
 import Timer from './Timer';
 import { db } from '../firebase';
@@ -11,8 +11,18 @@ import { doc, updateDoc, addDoc, collection, serverTimestamp } from 'firebase/fi
 import { 
   Zap, LayoutGrid, Users, FolderOpen, 
   CheckCircle, History, LogOut, Calendar, Plus,
-  Briefcase, DollarSign, BarChart3, Pause, Play, ZapOff, Coffee
+  Briefcase, DollarSign, BarChart3, Pause, Play, ZapOff, Coffee, Lock
 } from 'lucide-react';
+
+// --- HELPER: Format Milliseconds to HH:MM:SS ---
+const formatDuration = (ms) => {
+  if (!ms) return "00:00:00";
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+};
 
 // --- SUB-COMPONENT: GLOBAL TIMER WIDGET ---
 function GlobalTimerWidget() {
@@ -51,18 +61,44 @@ function GlobalTimerWidget() {
 
 // --- MAIN LAYOUT COMPONENT ---
 export default function Layout() {
-  const { currentUser, logout } = useAuth();
+  const { currentUser, logout, changePassword } = useAuth(); 
   const { globalDate, setGlobalDate } = useDate(); 
+  const { stopTask, activeTask } = useTimer(); // Import stopTask to pause work
   const [isModalOpen, setIsModalOpen] = useState(false); 
+  
+  // Break Timer State
+  const [breakElapsed, setBreakElapsed] = useState(0);
+
   const navigate = useNavigate();
 
   // --- ACTIVATE MONITORING ---
-  // Tracks mouse/keyboard and handles Idle logic
   useActivityMonitor(currentUser);
+
+  // --- LIVE BREAK TIMER ---
+  useEffect(() => {
+    let interval;
+    if (currentUser?.onlineStatus === 'Break' && currentUser?.lastBreakStart) {
+        // Update timer every second
+        interval = setInterval(() => {
+            setBreakElapsed(Date.now() - currentUser.lastBreakStart);
+        }, 1000);
+    } else {
+        setBreakElapsed(0);
+    }
+    return () => clearInterval(interval);
+  }, [currentUser?.onlineStatus, currentUser?.lastBreakStart]);
 
   const handleLogout = () => {
     logout();
     navigate('/');
+  };
+
+  // --- HANDLE PASSWORD CHANGE (Self) ---
+  const handlePasswordChange = () => {
+      const newPass = prompt("Enter your new password:");
+      if (newPass) {
+          changePassword(newPass);
+      }
   };
 
   // --- BREAK HANDLER ---
@@ -71,23 +107,45 @@ export default function Layout() {
     const userRef = doc(db, 'users', currentUser.id);
 
     if (currentUser.onlineStatus === 'Break') {
-        // END BREAK -> Go Online
-        await updateDoc(userRef, { onlineStatus: 'Online', lastSeen: serverTimestamp() });
-        // Optional: Close the break log here if tracking duration
-    } else {
-        // START BREAK
-        await updateDoc(userRef, { onlineStatus: 'Break', lastSeen: serverTimestamp() });
+        // 1. ENDING BREAK
+        // Calculate total duration
+        const duration = Date.now() - (currentUser.lastBreakStart || Date.now());
         
-        // Log the break session start
-        try {
-            await addDoc(collection(db, 'idle_logs'), {
-                userId: currentUser.id,
-                userName: currentUser.fullname,
-                startTime: Date.now(),
-                date: new Date().toISOString().split('T')[0],
-                type: 'Manual Break'
-            });
-        } catch(e) { console.error("Error logging break", e); }
+        // Log the completed break to 'breaks' collection for Performance Stats
+        if (duration > 1000) {
+            try {
+                await addDoc(collection(db, 'breaks'), {
+                    userId: currentUser.id,
+                    userName: currentUser.fullname,
+                    startTime: currentUser.lastBreakStart,
+                    endTime: Date.now(),
+                    durationMs: duration,
+                    date: new Date().toISOString().split('T')[0]
+                });
+            } catch(e) { console.error(e); }
+        }
+
+        // Reset Status
+        await updateDoc(userRef, { 
+            onlineStatus: 'Online', 
+            lastSeen: serverTimestamp(),
+            lastBreakStart: null // Clear timer
+        });
+
+    } else {
+        // 2. STARTING BREAK
+        
+        // A) STOP Active Task first!
+        if (activeTask) {
+            await stopTask(); 
+        }
+
+        // B) Update Status & Start Timer
+        await updateDoc(userRef, { 
+            onlineStatus: 'Break', 
+            lastSeen: serverTimestamp(),
+            lastBreakStart: Date.now() // Save start time for timer
+        });
     }
   };
 
@@ -142,24 +200,43 @@ export default function Layout() {
           )}
         </div>
 
-        {/* BOTTOM ACTIONS (BREAK & LOGOUT) */}
+        {/* BOTTOM ACTIONS */}
         <div className="p-6 border-t border-border space-y-3">
           
+          {/* 1. CHANGE PASSWORD (Visible to everyone) */}
           <button 
-            onClick={toggleBreak}
-            className={`btn w-full justify-center gap-2 font-bold transition-all ${
-               currentUser?.onlineStatus === 'Break' 
-               ? 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200'
-               : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-            }`}
+            onClick={handlePasswordChange}
+            className="btn btn-ghost w-full text-text-sec hover:bg-slate-100 justify-start pl-4"
           >
-            {currentUser?.onlineStatus === 'Break' ? (
-                <><Play size={18} /> Resume Work</>
-            ) : (
-                <><Coffee size={18} /> Take a Break</>
-            )}
+            <Lock size={18} /> Change Pass
           </button>
 
+          {/* 2. TAKE BREAK (Visible ONLY to Members, HIDDEN for Admins) */}
+          {currentUser?.role !== 'ADMIN' && (
+              <button 
+                onClick={toggleBreak}
+                className={`btn w-full justify-center gap-2 font-bold transition-all relative overflow-hidden ${
+                   currentUser?.onlineStatus === 'Break' 
+                   ? 'bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-200'
+                   : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                }`}
+              >
+                {currentUser?.onlineStatus === 'Break' ? (
+                    <div className="flex flex-col items-center leading-none py-1">
+                        <div className="flex items-center gap-2 text-xs uppercase tracking-widest mb-1">
+                            <Play size={12} /> Resume
+                        </div>
+                        <div className="font-mono text-lg font-black">
+                            {formatDuration(breakElapsed)}
+                        </div>
+                    </div>
+                ) : (
+                    <><Coffee size={18} /> Take a Break</>
+                )}
+              </button>
+          )}
+
+          {/* 3. LOGOUT */}
           <button onClick={handleLogout} className="btn btn-ghost w-full text-danger hover:text-danger hover:bg-danger-bg justify-start pl-4">
             <LogOut size={18} /> Log Out
           </button>
