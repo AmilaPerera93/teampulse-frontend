@@ -3,7 +3,7 @@ import { db } from '../firebase';
 import { doc, updateDoc, serverTimestamp, addDoc, collection } from 'firebase/firestore';
 
 // 5 Minutes Idle Threshold (Normal usage)
-const IDLE_THRESHOLD = 5 * 60 * 1000; 
+const IDLE_THRESHOLD = 2 * 1000; 
 const HEARTBEAT_INTERVAL = 2 * 60 * 1000;
 
 export function useActivityMonitor(user) {
