@@ -1,0 +1,60 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-bg-body text-text-main font-sans antialiased h-screen overflow-hidden;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2.5 rounded-lg font-semibold border border-transparent cursor-pointer transition-all duration-150 inline-flex items-center gap-2 text-sm;
+  }
+  .btn-primary {
+    @apply bg-primary text-white shadow-sm hover:bg-primary-dark hover:-translate-y-px;
+  }
+  .btn-outline {
+    @apply bg-white border-border text-text-main hover:bg-slate-50 hover:border-slate-300;
+  }
+  .btn-ghost {
+    @apply bg-transparent text-text-sec hover:bg-slate-100 hover:text-primary;
+  }
+  .btn-danger {
+    @apply bg-danger-bg text-danger-700 hover:bg-danger-100;
+  }
+  .btn-icon {
+    @apply w-9 h-9 rounded-full flex items-center justify-center text-text-sec cursor-pointer transition-colors duration-200 hover:bg-slate-100 hover:text-primary;
+  }
+  
+  .card {
+    @apply bg-bg-surface rounded-xl border border-border p-6 shadow-sm transition-all duration-200 flex flex-col;
+  }
+  .card-hover {
+    @apply hover:-translate-y-1 hover:shadow-md hover:border-primary/50;
+  }
+
+  .badge {
+    @apply px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider inline-block;
+  }
+  .status-todo { @apply bg-slate-100 text-slate-500; }
+  .status-wip { @apply bg-amber-50 text-amber-700 border border-amber-200; }
+  .status-done { @apply bg-emerald-50 text-emerald-700 border border-emerald-200; }
+  .status-admin { @apply bg-indigo-50 text-indigo-600; }
+
+  .input-field {
+    @apply w-full p-3 border border-border rounded-lg mb-4 text-sm bg-slate-50 transition-all duration-200 focus:outline-none focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary-light;
+  }
+}
+
+/* Utilities for scrollbar hiding if needed */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
