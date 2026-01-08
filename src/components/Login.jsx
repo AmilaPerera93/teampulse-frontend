@@ -1,54 +1,110 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Zap } from 'lucide-react'; // Using modern icons
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Zap, Download, ShieldLock } from 'lucide-react';
 
 export default function Login() {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const { login, loading } = useAuth();
+  const [searchParams] = useSearchParams();
+  const { loginWithToken, login, loading } = useAuth();
+  const navigate = useNavigate();
+  
+  const [status, setStatus] = useState('Checking Security...');
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  
+  // Admin Form State
+  const [adminUser, setAdminUser] = useState('');
+  const [adminPass, setAdminPass] = useState('');
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!username || !password) return;
-    await login(username, password);
+  // 1. AUTO-LOGIN WITH TOKEN (From Electron App)
+  useEffect(() => {
+    const token = searchParams.get('token');
+    if (token) {
+        setStatus("Verifying Secure Session...");
+        loginWithToken(token).then(success => {
+            if (success) {
+                navigate('/');
+            } else {
+                setStatus("Session Expired. Please restart the Desktop App.");
+            }
+        });
+    } else {
+        setStatus("Waiting for Desktop App...");
+    }
+  }, [searchParams]);
+
+  // 2. ADMIN LOGIN HANDLER
+  const handleAdminLogin = async (e) => {
+      e.preventDefault();
+      await login(adminUser, adminPass);
   };
 
   return (
-    <div className="fixed inset-0 bg-bg-body z-50 flex items-center justify-center p-4">
-      <div className="bg-white p-10 rounded-2xl w-full max-w-md shadow-2xl flex flex-col items-center">
-        <div className="text-5xl mb-4 text-primary animate-pulse-fast">
+    <div className="fixed inset-0 bg-slate-50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white p-10 rounded-2xl w-full max-w-md shadow-xl border border-slate-100 flex flex-col items-center text-center">
+        
+        <div className="text-primary mb-6 animate-pulse">
             <Zap size={64} fill="currentColor" />
         </div>
-        <h1 className="text-3xl font-extrabold text-text-main mb-2">TeamPulse</h1>
-        <p className="text-text-sec mb-8">Sign in to your workspace</p>
         
-        <form onSubmit={handleSubmit} className="w-full text-left">
-          <label className="text-xs font-extrabold text-text-sec mb-2 block tracking-wider">USERNAME</label>
-          <input 
-            type="text" 
-            className="input-field" 
-            placeholder="e.g. admin"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          
-          <label className="text-xs font-extrabold text-text-sec mb-2 block tracking-wider">PASSWORD</label>
-          <input 
-            type="password" 
-            className="input-field" 
-            placeholder="••••••"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+        <h1 className="text-3xl font-extrabold text-slate-800 mb-2">TeamPulse Secure</h1>
 
-          <button 
-            type="submit" 
-            className="btn btn-primary w-full justify-center mt-4 h-12 text-base"
-            disabled={loading}
-          >
-            {loading ? 'Logging in...' : 'Log In'}
-          </button>
-        </form>
+        {/* --- SCENARIO A: NORMAL MEMBER (NO TOKEN) --- */}
+        {!searchParams.get('token') && !showAdminLogin && (
+            <div className="w-full mt-4">
+                <div className="bg-blue-50 text-blue-800 p-4 rounded-xl text-sm font-medium mb-6">
+                    ⚠️ Direct web login is disabled for security tracking.
+                </div>
+                
+                <p className="text-slate-500 mb-8">
+                    Please open the <b>TeamPulse Agent</b> on your desktop to log in automatically.
+                </p>
+
+                <button className="btn btn-primary w-full justify-center py-4 text-lg shadow-lg shadow-indigo-200 hover:scale-[1.02] transition-transform">
+                    <Download size={20} className="mr-2"/> Download Agent
+                </button>
+
+                <button 
+                    onClick={() => setShowAdminLogin(true)}
+                    className="mt-8 text-xs text-slate-400 hover:text-slate-600 flex items-center justify-center gap-1 w-full"
+                >
+                    <ShieldLock size={12}/> Admin Access
+                </button>
+            </div>
+        )}
+
+        {/* --- SCENARIO B: VERIFYING TOKEN --- */}
+        {searchParams.get('token') && (
+            <div className="mt-8 flex flex-col items-center">
+                <div className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4"></div>
+                <p className="font-semibold text-slate-600">{status}</p>
+            </div>
+        )}
+
+        {/* --- SCENARIO C: ADMIN LOGIN FORM --- */}
+        {showAdminLogin && (
+            <form onSubmit={handleAdminLogin} className="w-full text-left mt-6 animate-in fade-in slide-in-from-bottom-4">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-bold text-slate-700">Admin Login</h3>
+                    <button type="button" onClick={() => setShowAdminLogin(false)} className="text-xs text-primary">Cancel</button>
+                </div>
+                
+                <input 
+                    className="input-field" 
+                    placeholder="Admin Username" 
+                    value={adminUser} onChange={e => setAdminUser(e.target.value)} 
+                />
+                <input 
+                    type="password" className="input-field" 
+                    placeholder="Password" 
+                    value={adminPass} onChange={e => setAdminPass(e.target.value)} 
+                />
+
+                <button type="submit" className="btn btn-primary w-full justify-center mt-4" disabled={loading}>
+                    {loading ? 'Verifying...' : 'Access Dashboard'}
+                </button>
+            </form>
+        )}
+
       </div>
     </div>
   );

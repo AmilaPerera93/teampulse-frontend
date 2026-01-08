@@ -3,11 +3,12 @@ import { db } from '../firebase';
 import { collection, query, where, onSnapshot, doc, deleteDoc } from 'firebase/firestore'; 
 import { useDate } from '../contexts/DateContext';
 import { useNavigate } from 'react-router-dom';
-import { Trash2, ExternalLink } from 'lucide-react';
+import { Trash2, ExternalLink, Coffee } from 'lucide-react';
 import Timer from './Timer';
 
 // Helper for formatting "14m" or "1h 2m"
 const formatMinutes = (ms) => {
+    if (!ms) return "0m";
     const mins = Math.floor(ms / 60000);
     if (mins < 60) return `${mins}m`;
     const hrs = Math.floor(mins / 60);
@@ -19,29 +20,28 @@ export default function AdminDashboard() {
   const navigate = useNavigate();
   const [tasks, setTasks] = useState([]);
   const [users, setUsers] = useState([]);
+  const [breakData, setBreakData] = useState({}); // Stores total break time per user
   const [loading, setLoading] = useState(true);
   
-  // State to force re-render every minute to update "Break Duration" text
+  // State to force re-render every minute to update durations
   const [, setTick] = useState(0);
 
   // Pagination state
   const [expandedUsers, setExpandedUsers] = useState({});
 
   useEffect(() => {
-    // Force UI update every 60 seconds so "Break (5m)" becomes "Break (6m)"
+    // Force UI update every 60 seconds
     const interval = setInterval(() => setTick(t => t + 1), 60000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    // 1. Listen to Users (REAL-TIME STATUS UPDATES)
+    // 1. Listen to Users (REAL-TIME STATUS)
     const qUsers = query(collection(db, 'users'), where('role', '==', 'MEMBER'));
-    
     const unsubUsers = onSnapshot(qUsers, (snap) => {
         const userList = snap.docs.map(d => ({
             id: d.id,
             ...d.data(),
-            // Default to offline if status is missing
             onlineStatus: d.data().onlineStatus || 'Offline' 
         }));
         
@@ -52,18 +52,28 @@ export default function AdminDashboard() {
             const bVal = statusOrder[b.onlineStatus] ?? 3;
             return aVal - bVal;
         });
-
         setUsers(userList);
     });
 
-    // 2. Listen to Tasks for the selected GLOBAL DATE
+    // 2. Listen to Tasks (For Load Calc)
     const qTasks = query(collection(db, 'tasks'), where('date', '==', globalDate));
     const unsubTasks = onSnapshot(qTasks, (snap) => {
         setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+
+    // 3. Listen to Breaks (For Total Break Calc)
+    const qBreaks = query(collection(db, 'breaks'), where('date', '==', globalDate));
+    const unsubBreaks = onSnapshot(qBreaks, (snap) => {
+        const map = {}; // { userId: totalMs }
+        snap.docs.forEach(d => {
+            const data = d.data();
+            map[data.userId] = (map[data.userId] || 0) + (data.durationMs || 0);
+        });
+        setBreakData(map);
         setLoading(false);
     });
 
-    return () => { unsubUsers(); unsubTasks(); };
+    return () => { unsubUsers(); unsubTasks(); unsubBreaks(); };
   }, [globalDate]);
 
   const handleDelete = async (e, id) => {
@@ -91,36 +101,37 @@ export default function AdminDashboard() {
       {users.map(user => {
         const userName = user.fullname;
         
-        // --- STATUS LOGIC ---
+        // --- STATUS & BREAK LOGIC ---
         let displayStatus = user.onlineStatus;
         const lastSeenDate = user.lastSeen?.toDate();
-        let statusText = displayStatus; // Text to show (e.g. "Break (14m)")
+        let statusText = displayStatus;
 
-        // 1. CRASH DETECTION (Only if not on Break)
+        // A. Crash Detection
         if ((displayStatus === 'Online' || displayStatus === 'Idle') && lastSeenDate) {
-            const diff = (Date.now() - lastSeenDate.getTime()) / 1000 / 60; // diff in minutes
+            const diff = (Date.now() - lastSeenDate.getTime()) / 1000 / 60;
             if (diff > 3) {
                 displayStatus = 'Offline';
                 statusText = 'Offline';
             }
         }
 
-        // 2. BREAK DURATION CALCULATION
+        // B. Current Session Break Time
+        let currentSessionBreakMs = 0;
         if (displayStatus === 'Break' && user.lastBreakStart) {
-            const breakDuration = Date.now() - user.lastBreakStart;
-            statusText = `Break (${formatMinutes(breakDuration)})`;
+            currentSessionBreakMs = Date.now() - user.lastBreakStart;
+            statusText = `Break (${formatMinutes(currentSessionBreakMs)})`;
         }
 
-        // Filter tasks for this user
+        // C. Grand Total Break Time (Past + Current)
+        const pastBreaksMs = breakData[user.id] || 0;
+        const grandTotalBreakMs = pastBreaksMs + currentSessionBreakMs;
+
+        // Filter tasks
         const userTasks = tasks.filter(t => t.assignedTo === userName);
-        
-        // Sort: Running tasks first
         userTasks.sort((a,b) => (a.isRunning === b.isRunning ? 0 : a.isRunning ? -1 : 1));
-        
-        // Calc Total Load
         const totalLoad = userTasks.reduce((acc, t) => acc + (t.estHours || 0), 0);
         
-        // Pagination Logic
+        // Pagination
         const isExpanded = expandedUsers[userName];
         const visibleTasks = isExpanded ? userTasks : userTasks.slice(0, 4);
         const hiddenCount = userTasks.length - 4;
@@ -136,7 +147,7 @@ export default function AdminDashboard() {
                 <ExternalLink size={16} />
             </div>
 
-            <div className="flex justify-between items-center mb-4 pb-3 border-b border-border">
+            <div className="flex justify-between items-start mb-4 pb-3 border-b border-border">
                 <div className="flex items-center gap-3">
                     {/* AVATAR + STATUS DOT */}
                     <div className="relative">
@@ -167,9 +178,17 @@ export default function AdminDashboard() {
                     </div>
                 </div>
 
-                <span className="text-xs font-bold text-text-sec bg-slate-100 px-2 py-1 rounded">
-                    {totalLoad}h Load
-                </span>
+                {/* STATS BADGES */}
+                <div className="flex flex-col items-end gap-1">
+                    <span className="text-xs font-bold text-text-sec bg-slate-100 px-2 py-1 rounded">
+                        {totalLoad}h Load
+                    </span>
+                    {grandTotalBreakMs > 0 && (
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 ${grandTotalBreakMs > 3600000 ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-500'}`}>
+                            <Coffee size={10} /> {formatMinutes(grandTotalBreakMs)}
+                        </span>
+                    )}
+                </div>
             </div>
 
             <div className="space-y-3">

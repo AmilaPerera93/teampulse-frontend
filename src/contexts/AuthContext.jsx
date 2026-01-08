@@ -16,15 +16,13 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(false);
 
   // --- REAL-TIME SYNC ---
-  // This ensures that if the database changes (e.g. Status becomes 'Break'), 
-  // the app updates immediately without needing a refresh.
   useEffect(() => {
     if (!currentUser || !currentUser.id || currentUser.id === 'master') return;
 
     const unsub = onSnapshot(doc(db, 'users', currentUser.id), (docSnap) => {
         if (docSnap.exists()) {
             const freshData = { id: docSnap.id, ...docSnap.data() };
-            // Only update state if data actually changed to prevent loops
+            // Only update state if data actually changed
             if (JSON.stringify(freshData) !== JSON.stringify(currentUser)) {
                 setCurrentUser(freshData);
                 localStorage.setItem('teampulse_user', JSON.stringify(freshData));
@@ -35,10 +33,11 @@ export function AuthProvider({ children }) {
     return () => unsub();
   }, [currentUser?.id]);
 
-  // LOGIN
+  // --- STANDARD LOGIN (Username/Password) ---
   async function login(username, password) {
     setLoading(true);
-    // Emergency Fallback
+    
+    // Master Admin Backdoor
     if (username === 'admin' && password === 'admin123') {
       const masterData = { fullname: 'Master Admin', username: 'admin', role: 'ADMIN', id: 'master' };
       setCurrentUser(masterData);
@@ -64,7 +63,7 @@ export function AuthProvider({ children }) {
       const docSnap = querySnapshot.docs[0];
       const userData = { id: docSnap.id, ...docSnap.data() };
       
-      // Update status to Online immediately on login
+      // Update status to Online
       await updateDoc(doc(db, 'users', docSnap.id), {
         onlineStatus: 'Online',
         lastSeen: serverTimestamp()
@@ -82,13 +81,44 @@ export function AuthProvider({ children }) {
     }
   }
 
-  // LOGOUT
+  // --- NEW: TOKEN LOGIN (For Desktop App Auto-Login) ---
+  async function loginWithToken(token) {
+    setLoading(true);
+    try {
+        // Find user with this specific sessionToken
+        const q = query(collection(db, 'users'), where('sessionToken', '==', token));
+        const snapshot = await getDocs(q);
+
+        if (snapshot.empty) {
+            console.error("Invalid Token");
+            setLoading(false);
+            return false;
+        }
+
+        const docSnap = snapshot.docs[0];
+        const userData = { id: docSnap.id, ...docSnap.data() };
+        
+        // Log them in
+        setCurrentUser(userData);
+        localStorage.setItem('teampulse_user', JSON.stringify(userData));
+        setLoading(false);
+        return true;
+
+    } catch (e) {
+        console.error("Token login error:", e);
+        setLoading(false);
+        return false;
+    }
+  }
+
+  // --- LOGOUT ---
   async function logout() {
     if (currentUser && currentUser.id && currentUser.id !== 'master') {
       try {
         await updateDoc(doc(db, 'users', currentUser.id), {
           onlineStatus: 'Offline',
-          lastSeen: serverTimestamp()
+          lastSeen: serverTimestamp(),
+          sessionToken: null // Clear token on logout
         });
       } catch (e) { console.error(e); }
     }
@@ -98,7 +128,7 @@ export function AuthProvider({ children }) {
 
   // --- PASSWORD MANAGEMENT ---
 
-  // 1. For the current user changing their OWN password
+  // 1. Change OWN password
   async function changePassword(newPassword) {
       if(!currentUser || !currentUser.id) return;
       try {
@@ -110,7 +140,7 @@ export function AuthProvider({ children }) {
       }
   }
 
-  // 2. For Admins resetting SOMEONE ELSE'S password
+  // 2. Admin resets USER password
   async function resetUserPassword(userId, newPassword) {
       try {
           await updateDoc(doc(db, 'users', userId), { password: newPassword });
@@ -124,6 +154,7 @@ export function AuthProvider({ children }) {
   const value = {
     currentUser,
     login,
+    loginWithToken, // <--- Exported here
     logout,
     loading,
     changePassword,
