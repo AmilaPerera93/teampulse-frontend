@@ -3,14 +3,16 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useDate } from '../contexts/DateContext'; 
 import { useTimer } from '../contexts/TimerContext'; 
+import { useActivityMonitor } from '../hooks/useActivityMonitor'; // Activity Monitor Hook
 import AssignTaskModal from './AssignTaskModal';   
 import Timer from './Timer';
+import { db } from '../firebase';
+import { doc, updateDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore'; 
 import { 
   Zap, LayoutGrid, Users, FolderOpen, 
   CheckCircle, History, LogOut, Calendar, Plus,
-  Briefcase, DollarSign, BarChart3, Pause, Play, ZapOff
+  Briefcase, DollarSign, BarChart3, Pause, Play, ZapOff, Coffee
 } from 'lucide-react';
-import { useActivityMonitor } from '../hooks/useActivityMonitor'; // Import Hook
 
 // --- SUB-COMPONENT: GLOBAL TIMER WIDGET ---
 function GlobalTimerWidget() {
@@ -55,12 +57,38 @@ export default function Layout() {
   const navigate = useNavigate();
 
   // --- ACTIVATE MONITORING ---
-  // This will track mouse/keyboard events and update Firestore
-  useActivityMonitor(currentUser); 
+  // Tracks mouse/keyboard and handles Idle logic
+  useActivityMonitor(currentUser);
 
   const handleLogout = () => {
     logout();
     navigate('/');
+  };
+
+  // --- BREAK HANDLER ---
+  const toggleBreak = async () => {
+    if (!currentUser) return;
+    const userRef = doc(db, 'users', currentUser.id);
+
+    if (currentUser.onlineStatus === 'Break') {
+        // END BREAK -> Go Online
+        await updateDoc(userRef, { onlineStatus: 'Online', lastSeen: serverTimestamp() });
+        // Optional: Close the break log here if tracking duration
+    } else {
+        // START BREAK
+        await updateDoc(userRef, { onlineStatus: 'Break', lastSeen: serverTimestamp() });
+        
+        // Log the break session start
+        try {
+            await addDoc(collection(db, 'idle_logs'), {
+                userId: currentUser.id,
+                userName: currentUser.fullname,
+                startTime: Date.now(),
+                date: new Date().toISOString().split('T')[0],
+                type: 'Manual Break'
+            });
+        } catch(e) { console.error("Error logging break", e); }
+    }
   };
 
   const NavItem = ({ to, icon: Icon, label }) => (
@@ -114,7 +142,24 @@ export default function Layout() {
           )}
         </div>
 
-        <div className="p-6 border-t border-border">
+        {/* BOTTOM ACTIONS (BREAK & LOGOUT) */}
+        <div className="p-6 border-t border-border space-y-3">
+          
+          <button 
+            onClick={toggleBreak}
+            className={`btn w-full justify-center gap-2 font-bold transition-all ${
+               currentUser?.onlineStatus === 'Break' 
+               ? 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200'
+               : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+            }`}
+          >
+            {currentUser?.onlineStatus === 'Break' ? (
+                <><Play size={18} /> Resume Work</>
+            ) : (
+                <><Coffee size={18} /> Take a Break</>
+            )}
+          </button>
+
           <button onClick={handleLogout} className="btn btn-ghost w-full text-danger hover:text-danger hover:bg-danger-bg justify-start pl-4">
             <LogOut size={18} /> Log Out
           </button>

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { db } from '../firebase';
-import { collection, query, where, onSnapshot, doc, deleteDoc } from 'firebase/firestore'; // Removed getDocs, added onSnapshot
+import { collection, query, where, onSnapshot, doc, deleteDoc } from 'firebase/firestore'; 
 import { useDate } from '../contexts/DateContext';
 import { useNavigate } from 'react-router-dom';
 import { Trash2, ExternalLink } from 'lucide-react';
@@ -24,15 +24,15 @@ export default function AdminDashboard() {
         const userList = snap.docs.map(d => ({
             id: d.id,
             ...d.data(),
-            // Default to offline if not set
+            // Default to offline if status is missing
             onlineStatus: d.data().onlineStatus || 'Offline' 
         }));
         
-        // Optional: Sort so Online/Idle users are at the top
+        // Sort: Break > Online > Idle > Offline
         userList.sort((a, b) => {
-            const statusOrder = { 'Online': 1, 'Idle': 2, 'Offline': 3 };
-            const aVal = statusOrder[a.onlineStatus] || 3;
-            const bVal = statusOrder[b.onlineStatus] || 3;
+            const statusOrder = { 'Break': 0, 'Online': 1, 'Idle': 2, 'Offline': 3 };
+            const aVal = statusOrder[a.onlineStatus] ?? 3;
+            const bVal = statusOrder[b.onlineStatus] ?? 3;
             return aVal - bVal;
         });
 
@@ -61,13 +61,13 @@ export default function AdminDashboard() {
     setExpandedUsers(prev => ({ ...prev, [userName]: !prev[userName] }));
   };
 
-  if (loading) return <div className="text-center p-10 text-text-sec">Loading Overview...</div>;
+  if (loading) return <div className="text-center p-10 text-text-sec animate-pulse">Loading Team Overview...</div>;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 animate-in fade-in">
       {users.length === 0 && (
-        <div className="col-span-full text-center text-text-sec p-10">
-            No members found. Go to "Users" to add team members.
+        <div className="col-span-full text-center text-text-sec p-10 bg-white rounded-xl border border-dashed border-slate-300">
+            No team members found. Go to "Team" page to add users.
         </div>
       )}
 
@@ -78,8 +78,11 @@ export default function AdminDashboard() {
         let displayStatus = user.onlineStatus;
         const lastSeenDate = user.lastSeen?.toDate();
         
-        // Safety Check: If "Online" but no ping in > 3 mins, force Offline
-        if (displayStatus === 'Online' && lastSeenDate) {
+        // CRASH DETECTION:
+        // If status says "Online" or "Idle", but they haven't pinged in > 3 minutes,
+        // assume they crashed or closed the tab without logging out.
+        // (We skip this check if they are on 'Break', as breaks can be long)
+        if ((displayStatus === 'Online' || displayStatus === 'Idle') && lastSeenDate) {
             const diff = (Date.now() - lastSeenDate.getTime()) / 1000 / 60; // diff in minutes
             if (diff > 3) displayStatus = 'Offline';
         }
@@ -87,7 +90,7 @@ export default function AdminDashboard() {
         // Filter tasks for this user
         const userTasks = tasks.filter(t => t.assignedTo === userName);
         
-        // Sort: Running first
+        // Sort: Running tasks first
         userTasks.sort((a,b) => (a.isRunning === b.isRunning ? 0 : a.isRunning ? -1 : 1));
         
         // Calc Total Load
@@ -102,7 +105,7 @@ export default function AdminDashboard() {
           <div 
             key={user.id} 
             onClick={() => navigate(`/member/${userName}`)} 
-            className="card card-hover h-fit cursor-pointer group relative transition-all duration-200"
+            className="card card-hover h-fit cursor-pointer group relative transition-all duration-200 hover:shadow-md border-t-4 border-t-transparent hover:border-t-primary"
           >
             {/* Hover Hint */}
             <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity text-primary">
@@ -113,12 +116,13 @@ export default function AdminDashboard() {
                 <div className="flex items-center gap-3">
                     {/* AVATAR + STATUS DOT */}
                     <div className="relative">
-                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600 border border-slate-200">
+                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600 border border-slate-200 text-lg">
                             {userName.charAt(0)}
                         </div>
-                        <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-white shadow-sm ${
+                        <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-white shadow-sm transition-colors duration-500 ${
                             displayStatus === 'Online' ? 'bg-emerald-500' :
                             displayStatus === 'Idle' ? 'bg-amber-400' :
+                            displayStatus === 'Break' ? 'bg-blue-500' :
                             'bg-slate-300'
                         }`} title={displayStatus}></div>
                     </div>
@@ -127,9 +131,10 @@ export default function AdminDashboard() {
                         <h3 className="font-bold text-lg leading-tight group-hover:text-primary transition-colors">
                             {userName}
                         </h3>
-                        <span className={`text-[10px] uppercase font-bold tracking-wider ${
+                        <span className={`text-[10px] uppercase font-bold tracking-wider transition-colors duration-300 ${
                              displayStatus === 'Online' ? 'text-emerald-600' :
                              displayStatus === 'Idle' ? 'text-amber-500' :
+                             displayStatus === 'Break' ? 'text-blue-600' :
                              'text-slate-400'
                         }`}>
                             {displayStatus}
@@ -144,25 +149,27 @@ export default function AdminDashboard() {
 
             <div className="space-y-3">
                 {visibleTasks.length === 0 && (
-                    <div className="text-center italic text-text-sec text-sm py-4">No tasks assigned</div>
+                    <div className="text-center italic text-text-sec text-sm py-4 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+                        No tasks assigned
+                    </div>
                 )}
 
                 {visibleTasks.map(task => {
                     const isRun = task.isRunning;
                     return (
-                        <div key={task.id} className={`flex justify-between items-center text-sm p-2 rounded-lg border 
-                            ${isRun ? 'bg-emerald-50 border-emerald-200' : 'bg-transparent border-transparent border-b-slate-100'}`}>
+                        <div key={task.id} className={`flex justify-between items-center text-sm p-3 rounded-lg border transition-all duration-300
+                            ${isRun ? 'bg-emerald-50 border-emerald-200 shadow-sm' : 'bg-white border-transparent border-b-slate-100 hover:bg-slate-50'}`}>
                             
-                            <div className="overflow-hidden">
-                                <div className={`font-semibold truncate ${task.status === 'Done' ? 'line-through text-slate-400' : 'text-text-main'}`}>
-                                    {isRun && <span className="inline-block w-2 h-2 bg-success rounded-full mr-2 animate-pulse"></span>}
+                            <div className="overflow-hidden pr-2">
+                                <div className={`font-semibold truncate flex items-center ${task.status === 'Done' ? 'line-through text-slate-400' : 'text-text-main'}`}>
+                                    {isRun && <span className="inline-block w-2 h-2 bg-emerald-500 rounded-full mr-2 animate-pulse"></span>}
                                     {task.description}
                                 </div>
-                                <div className="text-xs text-text-sec">{task.project}</div>
+                                <div className="text-xs text-text-sec truncate">{task.project}</div>
                             </div>
 
-                            <div className="flex items-center gap-3 pl-2">
-                                <div className={`font-mono font-bold ${isRun ? 'text-success' : 'text-slate-400'}`}>
+                            <div className="flex items-center gap-3 shrink-0">
+                                <div className={`font-mono font-bold ${isRun ? 'text-emerald-600' : 'text-slate-400'}`}>
                                     <Timer 
                                         startTime={task.lastStartTime} 
                                         elapsed={task.elapsedMs} 
@@ -171,7 +178,8 @@ export default function AdminDashboard() {
                                 </div>
                                 <button 
                                     onClick={(e) => handleDelete(e, task.id)}
-                                    className="text-slate-300 hover:text-danger transition-colors p-1 rounded hover:bg-red-50"
+                                    className="text-slate-300 hover:text-red-500 transition-colors p-1.5 rounded-full hover:bg-red-50"
+                                    title="Delete Task"
                                 >
                                     <Trash2 size={16} />
                                 </button>
@@ -184,9 +192,9 @@ export default function AdminDashboard() {
             {hiddenCount > 0 && (
                 <button 
                     onClick={(e) => toggleExpand(e, userName)}
-                    className="w-full text-center text-sm text-primary font-semibold mt-4 pt-2 border-t border-border hover:underline"
+                    className="w-full text-center text-xs text-primary font-bold mt-3 pt-2 border-t border-dashed border-slate-200 hover:underline opacity-80 hover:opacity-100"
                 >
-                    {isExpanded ? 'Show Less' : `Show ${hiddenCount} More...`}
+                    {isExpanded ? 'Show Less' : `View ${hiddenCount} More Tasks`}
                 </button>
             )}
           </div>
