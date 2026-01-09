@@ -13,6 +13,7 @@ import InvoiceManager from './components/InvoiceManager';
 import ResourcePlanner from './components/ResourcePlanner';
 import LeaveManager from './components/LeaveManager';
 import HistoryLog from './components/HistoryLog';
+import MeetingManager from './components/MeetingManager';
 
 function ProtectedRoute({ children }) {
   const { currentUser } = useAuth();
@@ -46,6 +47,7 @@ export default function App() {
           <Route path="history" element={<div>History Page</div>} />
           <Route path="leaves" element={<LeaveManager />} />
           <Route path="history" element={<HistoryLog />} />
+          <Route path="/meetings" element={<MeetingManager />} />
         </Route>
       </Routes>
     </BrowserRouter>
