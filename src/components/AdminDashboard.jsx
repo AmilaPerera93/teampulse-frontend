@@ -3,7 +3,7 @@ import { db } from '../firebase';
 import { collection, query, where, onSnapshot, doc, deleteDoc } from 'firebase/firestore'; 
 import { useDate } from '../contexts/DateContext';
 import { useNavigate } from 'react-router-dom';
-import { Trash2, ExternalLink, Coffee, ZapOff, AlertCircle, CheckCircle } from 'lucide-react';
+import { ExternalLink, Coffee, ZapOff, AlertCircle, Play, CheckCircle } from 'lucide-react';
 import Timer from './Timer';
 
 // Helper for formatting time
@@ -21,11 +21,12 @@ export default function AdminDashboard() {
   
   const [users, setUsers] = useState([]);
   const [tasks, setTasks] = useState([]);
-  const [stats, setStats] = useState({}); // Stores aggregated logs per user
+  const [stats, setStats] = useState({ idle: {}, break: {}, power: {}, activeCut: {} });
   const [loading, setLoading] = useState(true);
   const [expandedUsers, setExpandedUsers] = useState({});
   const [, setTick] = useState(0);
 
+  // Force re-render every minute to update "Live" durations
   useEffect(() => {
     const interval = setInterval(() => setTick(t => t + 1), 60000);
     return () => clearInterval(interval);
@@ -34,19 +35,22 @@ export default function AdminDashboard() {
   useEffect(() => {
     setLoading(true);
     
-    // 1. LISTEN TO USERS (Real-time Status)
+    // 1. LISTEN TO USERS (The Source of Truth)
     const qUsers = query(collection(db, 'users'), where('role', '==', 'MEMBER'));
     const unsubUsers = onSnapshot(qUsers, (snap) => {
         const userList = snap.docs.map(d => ({
             id: d.id, ...d.data(), onlineStatus: d.data().onlineStatus || 'Offline' 
         }));
         
-        // Sort: Break > Online > Idle > Offline
+        // Sort: Power Cut > Break > Online > Idle > Offline
         userList.sort((a, b) => {
-            const statusOrder = { 'Break': 0, 'Online': 1, 'Idle': 2, 'Offline': 3 };
+            const statusOrder = { 'Power Cut': -1, 'Break': 0, 'Online': 1, 'Idle': 2, 'Offline': 3 };
             return (statusOrder[a.onlineStatus] ?? 3) - (statusOrder[b.onlineStatus] ?? 3);
         });
         setUsers(userList);
+        
+        // CRITICAL FIX: Stop loading as soon as we have users (or empty list)
+        setLoading(false);
     });
 
     // 2. LISTEN TO TASKS (Work Load)
@@ -55,112 +59,47 @@ export default function AdminDashboard() {
         setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    // 3. AGGREGATE LOGS (Idle, Breaks, Power)
-    // We listen to these collections to calculate daily totals
+    // 3. LISTEN TO LOGS (Idle, Breaks, Power)
+    // We update the 'stats' state incrementally as data comes in
     const qIdle = query(collection(db, 'idle_logs'), where('date', '==', globalDate));
+    const unsubIdle = onSnapshot(qIdle, (s) => {
+        const data = {}; 
+        s.docs.forEach(d => { const id = d.data().userId; data[id] = (data[id]||0) + d.data().durationMs; });
+        setStats(prev => ({ ...prev, idle: data }));
+    });
+
     const qBreaks = query(collection(db, 'breaks'), where('date', '==', globalDate));
-    const qPower = query(collection(db, 'power_logs'), where('date', '==', globalDate));
-    // Also get active interruptions to show "Currently in Power Cut"
-    const qActiveInt = query(collection(db, 'interruptions'), where('active', '==', true));
-
-    const unsubStats = onSnapshot(query(collection(db, 'users')), async () => {
-       // Note: In a real production app with thousands of logs, you'd use aggregation queries.
-       // For this scale, client-side aggregation is responsive and fine.
-    });
-
-    // Combined Listener logic for stats
-    const updateStats = (snapIdle, snapBreaks, snapPower, snapInt) => {
-        const newStats = {};
-        
-        // Helper to sum duration by userId
-        const sumBy = (snap) => {
-            snap.docs.forEach(d => {
-                const uId = d.data().userId;
-                if(!newStats[uId]) newStats[uId] = { idle: 0, break: 0, power: 0, activeCut: null };
-                newStats[uId].idle += (d.data().type === 'IDLE' ? d.data().durationMs : 0); // Logic handled below actually
-            });
-        };
-        
-        // Process Idle
-        snapIdle.docs.forEach(d => {
-            const uId = d.data().userId;
-            if(!newStats[uId]) newStats[uId] = { idle: 0, break: 0, power: 0 };
-            newStats[uId].idle += d.data().durationMs;
-        });
-
-        // Process Breaks
-        snapBreaks.docs.forEach(d => {
-            const uId = d.data().userId;
-            if(!newStats[uId]) newStats[uId] = { idle: 0, break: 0, power: 0 };
-            newStats[uId].break += d.data().durationMs;
-        });
-
-        // Process Power Logs
-        snapPower.docs.forEach(d => {
-            const uId = d.data().userId;
-            if(!newStats[uId]) newStats[uId] = { idle: 0, break: 0, power: 0 };
-            newStats[uId].power += d.data().durationMs;
-        });
-
-        // Process Active Interruptions
-        snapInt.docs.forEach(d => {
-            const uId = d.data().userId;
-            if(!newStats[uId]) newStats[uId] = { idle: 0, break: 0, power: 0 };
-            newStats[uId].activeCut = d.data().startTime;
-        });
-
-        setStats(newStats);
-        setLoading(false);
-    };
-
-    // We need 4 snapshots. To keep code clean, we define them here:
-    let uI, uB, uP, uA;
-    // This part is tricky with hooks. A simpler approach for dashboard is to just fetch snapshots in a wrapper
-    // But to keep it real-time, we will use a combined state updater.
-    
-    // Simplification: We will run independent listeners and merge into state
-    const s_idle = onSnapshot(qIdle, (s) => { 
-        setStats(prev => {
-            const next = {...prev};
-            s.docs.forEach(d => {
-                 const uid = d.data().userId;
-                 if(!next[uid]) next[uid] = { idle: 0, break: 0, power: 0 };
-                 // Re-calculating total strictly is safer:
-            });
-            // To avoid complex merging bugs, let's just fetch aggregates on render for simplicity 
-            // OR simpler: Store raw data arrays in state and reduce in render.
-            // Let's do the Raw Data approach for perfect accuracy.
-        });
-    });
-    
-    // RE-APPROACH: Fetch raw lists for the day. 
-    // It is cheap for < 1000 records per day.
-    const unsubIdle = onSnapshot(qIdle, (s) => { 
-        const data = {}; s.docs.forEach(d => { const id = d.data().userId; data[id] = (data[id]||0) + d.data().durationMs; });
-        setStats(prev => ({...prev, idle: data}));
-    });
     const unsubBreak = onSnapshot(qBreaks, (s) => {
-        const data = {}; s.docs.forEach(d => { const id = d.data().userId; data[id] = (data[id]||0) + d.data().durationMs; });
-        setStats(prev => ({...prev, break: data}));
+        const data = {}; 
+        s.docs.forEach(d => { const id = d.data().userId; data[id] = (data[id]||0) + d.data().durationMs; });
+        setStats(prev => ({ ...prev, break: data }));
     });
+
+    const qPower = query(collection(db, 'power_logs'), where('date', '==', globalDate));
     const unsubPower = onSnapshot(qPower, (s) => {
-        const data = {}; s.docs.forEach(d => { const id = d.data().userId; data[id] = (data[id]||0) + d.data().durationMs; });
-        setStats(prev => ({...prev, power: data}));
+        const data = {}; 
+        s.docs.forEach(d => { const id = d.data().userId; data[id] = (data[id]||0) + d.data().durationMs; });
+        setStats(prev => ({ ...prev, power: data }));
     });
+
+    // 4. LISTEN TO ACTIVE INTERRUPTIONS (Live Power Cuts)
+    const qActiveInt = query(collection(db, 'interruptions'), where('active', '==', true));
     const unsubActive = onSnapshot(qActiveInt, (s) => {
-        const data = {}; s.docs.forEach(d => { const id = d.data().userId; data[id] = d.data().startTime; });
-        setStats(prev => ({...prev, activeCut: data}));
+        const data = {}; 
+        s.docs.forEach(d => { 
+            // We need to match by user ID. 
+            // If your interruption doc has 'userId', use it. If only 'user' (name), we might need to map it.
+            // Assuming we saved 'userId' in the latest MemberDashboard update.
+            const id = d.data().userId; 
+            if(id) data[id] = d.data().startTime; 
+        });
+        setStats(prev => ({ ...prev, activeCut: data }));
     });
 
     return () => { 
         unsubUsers(); unsubTasks(); unsubIdle(); unsubBreak(); unsubPower(); unsubActive();
     };
   }, [globalDate]);
-
-  const handleDelete = async (e, id) => {
-    e.stopPropagation(); 
-    if(confirm("Permanently delete this task?")) await deleteDoc(doc(db, 'tasks', id));
-  };
 
   const toggleExpand = (e, userName) => {
     e.stopPropagation();
@@ -172,8 +111,8 @@ export default function AdminDashboard() {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 animate-in fade-in pb-20">
       {users.length === 0 && (
-        <div className="col-span-full text-center text-text-sec p-10 bg-white rounded-xl border border-dashed border-slate-300">
-            No team members found.
+        <div className="col-span-full text-center text-slate-400 p-10 bg-white rounded-xl border border-dashed border-slate-300">
+            No team members found. Invite users to get started.
         </div>
       )}
 
@@ -194,7 +133,7 @@ export default function AdminDashboard() {
             }
         }
 
-        // Active Power Cut Override
+        // Active Power Cut Override (Highest Priority)
         const activeCutStart = stats.activeCut?.[uId];
         if (activeCutStart) {
             displayStatus = 'Power Cut';
@@ -206,7 +145,7 @@ export default function AdminDashboard() {
         const totalBreak = stats.break?.[uId] || 0;
         const totalPower = stats.power?.[uId] || 0;
         
-        // Add current session times if active
+        // Add current session durations for "Live" accuracy
         let currentSessionMs = 0;
         if (displayStatus === 'Break' && user.lastBreakStart) {
             currentSessionMs = Date.now() - user.lastBreakStart;
@@ -217,19 +156,23 @@ export default function AdminDashboard() {
             statusText = `No Power (${formatMinutes(currentSessionMs)})`;
         }
 
+        // Grand Totals (Historic + Current Session)
         const grandTotalBreak = totalBreak + (displayStatus === 'Break' ? currentSessionMs : 0);
-        const grandTotalPower = totalPower + (displayStatus === 'Power Cut' ? currentSessionMs : 0);
+        const grandTotalPower = totalPower + (activeCutStart ? currentSessionMs : 0);
 
         // --- 3. TASKS ---
         const userTasks = tasks.filter(t => t.assignedTo === userName);
         userTasks.sort((a,b) => (a.isRunning === b.isRunning ? 0 : a.isRunning ? -1 : 1));
-        const totalLoad = userTasks.reduce((acc, t) => acc + (t.estHours || 0), 0);
         
         // --- 4. EFFICIENCY SCORE ---
-        // Worked Time / (8h - PowerCuts - Breaks)
+        // Worked Time = Completed Tasks Duration + Current Task Duration
         const workedMs = userTasks.reduce((acc, t) => acc + (t.elapsedMs || 0) + (t.isRunning ? (Date.now() - t.lastStartTime) : 0), 0);
+        
+        // Net Available = 8 Hours - (Power Cuts + Breaks)
         const netAvailable = (8 * 3600000) - grandTotalPower - grandTotalBreak;
-        const efficiency = netAvailable > 0 ? Math.round((workedMs / netAvailable) * 100) : 0;
+        
+        // Score = Worked / Net Available
+        const efficiency = netAvailable > 0 ? Math.min(100, Math.round((workedMs / netAvailable) * 100)) : 0;
 
         const isExpanded = expandedUsers[userName];
         const visibleTasks = isExpanded ? userTasks : userTasks.slice(0, 3);
@@ -239,14 +182,15 @@ export default function AdminDashboard() {
           <div 
             key={user.id} 
             onClick={() => navigate(`/member/${userName}`)} 
-            className="card card-hover h-fit cursor-pointer group relative transition-all duration-200 hover:shadow-md border-t-4 border-t-transparent hover:border-t-primary"
+            className={`card card-hover h-fit cursor-pointer group relative transition-all duration-200 hover:shadow-md border-t-4 
+                ${displayStatus === 'Power Cut' ? 'border-t-red-500 bg-red-50/10' : 'border-t-transparent hover:border-t-primary bg-white'}`}
           >
             <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity text-primary">
                 <ExternalLink size={16} />
             </div>
 
             {/* HEADER SECTION */}
-            <div className="flex justify-between items-start mb-4 pb-3 border-b border-border">
+            <div className="flex justify-between items-start mb-4 pb-3 border-b border-slate-100">
                 <div className="flex items-center gap-3">
                     <div className="relative">
                         <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600 border border-slate-200 text-lg">
@@ -256,7 +200,7 @@ export default function AdminDashboard() {
                             displayStatus === 'Online' ? 'bg-emerald-500' :
                             displayStatus === 'Idle' ? 'bg-amber-400' :
                             displayStatus === 'Break' ? 'bg-blue-500' :
-                            displayStatus === 'Power Cut' ? 'bg-red-600' :
+                            displayStatus === 'Power Cut' ? 'bg-red-600 animate-pulse' :
                             'bg-slate-300'
                         }`} title={displayStatus}></div>
                     </div>
@@ -265,15 +209,19 @@ export default function AdminDashboard() {
                         <h3 className="font-bold text-lg leading-tight group-hover:text-primary transition-colors">
                             {userName}
                         </h3>
-                        <span className={`text-[10px] uppercase font-bold tracking-wider transition-colors duration-300 ${
-                             displayStatus === 'Online' ? 'text-emerald-600' :
-                             displayStatus === 'Idle' ? 'text-amber-500' :
-                             displayStatus === 'Break' ? 'text-blue-600' :
-                             displayStatus === 'Power Cut' ? 'text-red-600' :
-                             'text-slate-400'
-                        }`}>
-                            {statusText}
-                        </span>
+                        <div className="flex items-center gap-2">
+                            <span className={`text-[10px] uppercase font-bold tracking-wider transition-colors duration-300 ${
+                                displayStatus === 'Online' ? 'text-emerald-600' :
+                                displayStatus === 'Idle' ? 'text-amber-500' :
+                                displayStatus === 'Break' ? 'text-blue-600' :
+                                displayStatus === 'Power Cut' ? 'text-red-600' :
+                                'text-slate-400'
+                            }`}>
+                                {statusText}
+                            </span>
+                            {/* Warning Icon for Power Cuts */}
+                            {displayStatus === 'Power Cut' && <ZapOff size={12} className="text-red-600 animate-pulse"/>}
+                        </div>
                     </div>
                 </div>
 
@@ -285,18 +233,18 @@ export default function AdminDashboard() {
                 </div>
             </div>
 
-            {/* MINI STATS GRID */}
+            {/* STATS GRID */}
             <div className="grid grid-cols-3 gap-2 mb-4 text-center">
                 <div className="p-2 bg-amber-50 rounded border border-amber-100">
-                    <div className="text-[10px] text-amber-700 font-bold uppercase mb-1">Idle</div>
+                    <div className="text-[10px] text-amber-700 font-bold uppercase mb-1 flex justify-center gap-1"><AlertCircle size={10}/> Idle</div>
                     <div className="font-mono text-sm font-bold text-amber-900">{formatMinutes(totalIdle)}</div>
                 </div>
                 <div className="p-2 bg-blue-50 rounded border border-blue-100">
-                    <div className="text-[10px] text-blue-700 font-bold uppercase mb-1">Breaks</div>
+                    <div className="text-[10px] text-blue-700 font-bold uppercase mb-1 flex justify-center gap-1"><Coffee size={10}/> Break</div>
                     <div className="font-mono text-sm font-bold text-blue-900">{formatMinutes(grandTotalBreak)}</div>
                 </div>
                 <div className="p-2 bg-red-50 rounded border border-red-100">
-                    <div className="text-[10px] text-red-700 font-bold uppercase mb-1">Cuts</div>
+                    <div className="text-[10px] text-red-700 font-bold uppercase mb-1 flex justify-center gap-1"><ZapOff size={10}/> Cuts</div>
                     <div className="font-mono text-sm font-bold text-red-900">{formatMinutes(grandTotalPower)}</div>
                 </div>
             </div>
@@ -304,8 +252,8 @@ export default function AdminDashboard() {
             {/* TASKS LIST */}
             <div className="space-y-2">
                 {visibleTasks.length === 0 && (
-                    <div className="text-center italic text-text-sec text-xs py-3 bg-slate-50 rounded border border-dashed border-slate-200">
-                        No tasks for today
+                    <div className="text-center italic text-slate-400 text-xs py-3 bg-slate-50 rounded border border-dashed border-slate-200">
+                        No tasks active for {globalDate === new Date().toISOString().split('T')[0] ? 'Today' : globalDate}
                     </div>
                 )}
 
@@ -313,15 +261,16 @@ export default function AdminDashboard() {
                     const isRun = task.isRunning;
                     return (
                         <div key={task.id} className={`flex justify-between items-center text-xs p-2 rounded border transition-all ${
-                            isRun ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-100 hover:bg-slate-50'
+                            isRun ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-slate-100 hover:bg-slate-50'
                         }`}>
-                            <div className="truncate pr-2">
+                            <div className="truncate pr-2 flex items-center gap-2">
+                                {isRun && <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></div>}
                                 <span className={`font-medium ${task.status==='Done'?'line-through text-slate-400':'text-slate-700'}`}>
                                     {task.description}
                                 </span>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
-                                <span className={`font-mono font-bold ${isRun ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                <span className={`font-mono font-bold ${isRun ? 'text-indigo-600' : 'text-slate-400'}`}>
                                     <Timer startTime={task.lastStartTime} elapsed={task.elapsedMs} isRunning={isRun} />
                                 </span>
                             </div>
@@ -333,7 +282,7 @@ export default function AdminDashboard() {
             {hiddenCount > 0 && (
                 <button 
                     onClick={(e) => toggleExpand(e, userName)}
-                    className="w-full text-center text-[10px] text-slate-400 font-bold mt-2 hover:text-primary transition-colors uppercase tracking-wide"
+                    className="w-full text-center text-[10px] text-slate-400 font-bold mt-2 hover:text-indigo-600 transition-colors uppercase tracking-wide"
                 >
                     {isExpanded ? 'Show Less' : `+ ${hiddenCount} more tasks`}
                 </button>
