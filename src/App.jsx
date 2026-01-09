@@ -11,6 +11,7 @@ import MemberDetail from './components/MemberDetail';
 import ClientManager from './components/ClientManager';
 import InvoiceManager from './components/InvoiceManager';
 import ResourcePlanner from './components/ResourcePlanner';
+import LeaveManager from './components/LeaveManager';
 
 function ProtectedRoute({ children }) {
   const { currentUser } = useAuth();
