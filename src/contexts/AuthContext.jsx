@@ -16,12 +16,14 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(false);
 
   // --- REAL-TIME SYNC ---
+  // Keeps the web user updated if the Electron app changes their status (e.g. to Idle)
   useEffect(() => {
     if (!currentUser || !currentUser.id || currentUser.id === 'master') return;
 
     const unsub = onSnapshot(doc(db, 'users', currentUser.id), (docSnap) => {
         if (docSnap.exists()) {
             const freshData = { id: docSnap.id, ...docSnap.data() };
+            // Update local state if DB changes
             if (JSON.stringify(freshData) !== JSON.stringify(currentUser)) {
                 setCurrentUser(freshData);
                 localStorage.setItem('teampulse_user', JSON.stringify(freshData));
@@ -31,11 +33,11 @@ export function AuthProvider({ children }) {
     return () => unsub();
   }, [currentUser?.id]);
 
-  // --- STANDARD LOGIN (Web Form - ADMIN ONLY) ---
+  // --- LOGIN ---
   async function login(username, password) {
     setLoading(true);
     
-    // Master Admin Backdoor
+    // Master Admin
     if (username === 'admin' && password === 'admin123') {
       const masterData = { fullname: 'Master Admin', username: 'admin', role: 'ADMIN', id: 'master' };
       setCurrentUser(masterData);
@@ -61,14 +63,14 @@ export function AuthProvider({ children }) {
       const docSnap = querySnapshot.docs[0];
       const userData = { id: docSnap.id, ...docSnap.data() };
       
-      // --- SECURITY CHECK: BLOCK NON-ADMINS ---
+      // ADMINS ONLY on Web
       if (userData.role !== 'ADMIN') {
-          alert("ACCESS DENIED: Team Members must log in using the Desktop Tracker app.");
+          alert("ACCESS DENIED: Please use the Desktop Tracker app.");
           setLoading(false);
           return false;
       }
 
-      // Admin Login Success
+      // Mark Admin Online
       await updateDoc(doc(db, 'users', docSnap.id), {
         onlineStatus: 'Online',
         lastSeen: serverTimestamp()
@@ -80,13 +82,12 @@ export function AuthProvider({ children }) {
       return true;
     } catch (error) {
       console.error("Login error:", error);
-      alert("Login failed. Check console.");
       setLoading(false);
       return false;
     }
   }
 
-  // --- TOKEN LOGIN (For Desktop App) ---
+  // --- TOKEN LOGIN ---
   async function loginWithToken(token) {
     setLoading(true);
     try {
@@ -94,7 +95,6 @@ export function AuthProvider({ children }) {
         const snapshot = await getDocs(q);
 
         if (snapshot.empty) {
-            console.error("Invalid Token");
             setLoading(false);
             return false;
         }
@@ -107,41 +107,50 @@ export function AuthProvider({ children }) {
         setLoading(false);
         return true;
     } catch (e) {
-        console.error("Token login error:", e);
         setLoading(false);
         return false;
     }
   }
 
-  // --- LOGOUT ---
+  // --- LOGOUT (The Heavy Lifter) ---
   async function logout() {
     if (currentUser && currentUser.id && currentUser.id !== 'master') {
       try {
+        // 1. PAUSE ALL RUNNING TASKS
+        // This ensures tasks don't run forever if user clocks out
+        const qRunning = query(
+            collection(db, 'tasks'), 
+            where('assignedTo', '==', currentUser.fullname), 
+            where('isRunning', '==', true)
+        );
+        const runningSnap = await getDocs(qRunning);
+        
+        const updates = runningSnap.docs.map(tDoc => {
+             const tData = tDoc.data();
+             const elapsed = tData.elapsedMs || 0;
+             const session = tData.lastStartTime ? (Date.now() - tData.lastStartTime) : 0;
+             
+             return updateDoc(doc(db, 'tasks', tDoc.id), {
+                 isRunning: false,
+                 lastStartTime: null,
+                 elapsedMs: elapsed + session
+             });
+        });
+        await Promise.all(updates);
+
+        // 2. KILL ELECTRON SESSION & MARK OFFLINE
         await updateDoc(doc(db, 'users', currentUser.id), {
           onlineStatus: 'Offline',
           lastSeen: serverTimestamp(),
-          sessionToken: null 
+          sessionToken: null // <--- This triggers Electron to logout
         });
-      } catch (e) { console.error(e); }
+
+      } catch (e) { console.error("Logout Cleanup Error:", e); }
     }
+    
+    // 3. Local Cleanup
     localStorage.removeItem('teampulse_user');
     setCurrentUser(null);
-  }
-
-  // --- PASSWORD MANAGEMENT ---
-  async function changePassword(newPassword) {
-      if(!currentUser || !currentUser.id) return;
-      try {
-          await updateDoc(doc(db, 'users', currentUser.id), { password: newPassword });
-          alert("Your password has been updated successfully.");
-      } catch (e) { console.error(e); alert("Error updating password."); }
-  }
-
-  async function resetUserPassword(userId, newPassword) {
-      try {
-          await updateDoc(doc(db, 'users', userId), { password: newPassword });
-          alert("User password reset successfully.");
-      } catch (e) { console.error(e); alert("Error resetting password."); }
   }
 
   const value = {
@@ -149,9 +158,7 @@ export function AuthProvider({ children }) {
     login,
     loginWithToken,
     logout,
-    loading,
-    changePassword,
-    resetUserPassword
+    loading
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
