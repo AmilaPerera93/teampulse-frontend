@@ -3,7 +3,7 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useDate } from '../contexts/DateContext'; 
 import { useTimer } from '../contexts/TimerContext'; 
-import { useActivityMonitor } from '../hooks/useActivityMonitor'; // (Optional fallback)
+import { useActivityMonitor } from '../hooks/useActivityMonitor'; // <--- UNCOMMENTED THIS
 import AssignTaskModal from './AssignTaskModal';   
 import Timer from './Timer';
 import { db } from '../firebase';
@@ -64,7 +64,9 @@ export default function Layout() {
   const [breakElapsed, setBreakElapsed] = useState(0);
   const navigate = useNavigate();
 
-  // useActivityMonitor(currentUser); // Optional fallback
+  // --- UNCOMMENTED THIS LINE BELOW ---
+  useActivityMonitor(currentUser); 
+  // ------------------------------------
 
   // Break Timer
   useEffect(() => {
