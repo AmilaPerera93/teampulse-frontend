@@ -3,7 +3,7 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useDate } from '../contexts/DateContext'; 
 import { useTimer } from '../contexts/TimerContext'; 
-// import { useActivityMonitor } from '../hooks/useActivityMonitor'; // (Optional fallback)
+import { useActivityMonitor } from '../hooks/useActivityMonitor'; 
 import AssignTaskModal from './AssignTaskModal';   
 import Timer from './Timer';
 import { db } from '../firebase';
@@ -11,7 +11,7 @@ import { doc, updateDoc, addDoc, collection, serverTimestamp } from 'firebase/fi
 import { 
   Zap, LayoutGrid, Users, FolderOpen, 
   CheckCircle, History, LogOut, Calendar, Plus,
-  Briefcase, DollarSign, BarChart3, Pause, Play, ZapOff, Coffee, Lock
+  Briefcase, DollarSign, BarChart3, Pause, Play, ZapOff, Coffee, Lock, Loader2
 } from 'lucide-react';
 
 // Format Helper
@@ -62,9 +62,13 @@ export default function Layout() {
   const { stopTask, activeTask } = useTimer(); 
   const [isModalOpen, setIsModalOpen] = useState(false); 
   const [breakElapsed, setBreakElapsed] = useState(0);
+  
+  // --- NEW: Loading State for Break Button ---
+  const [breakLoading, setBreakLoading] = useState(false);
+
   const navigate = useNavigate();
 
-  // useActivityMonitor(currentUser); // Optional fallback
+  useActivityMonitor(currentUser); 
 
   // Break Timer
   useEffect(() => {
@@ -85,23 +89,33 @@ export default function Layout() {
 
   const toggleBreak = async () => {
     if (!currentUser) return;
+    if (breakLoading) return; // Prevent double clicks
+
+    setBreakLoading(true); // Disable button immediately
     const userRef = doc(db, 'users', currentUser.id);
 
-    if (currentUser.onlineStatus === 'Break') {
-        // END BREAK
-        const duration = Date.now() - (currentUser.lastBreakStart || Date.now());
-        if (duration > 1000) {
-            await addDoc(collection(db, 'breaks'), {
-                userId: currentUser.id, userName: currentUser.fullname,
-                startTime: currentUser.lastBreakStart, endTime: Date.now(),
-                durationMs: duration, date: new Date().toISOString().split('T')[0]
-            });
+    try {
+        if (currentUser.onlineStatus === 'Break') {
+            // END BREAK
+            const duration = Date.now() - (currentUser.lastBreakStart || Date.now());
+            if (duration > 1000) {
+                await addDoc(collection(db, 'breaks'), {
+                    userId: currentUser.id, userName: currentUser.fullname,
+                    startTime: currentUser.lastBreakStart, endTime: Date.now(),
+                    durationMs: duration, date: new Date().toISOString().split('T')[0]
+                });
+            }
+            await updateDoc(userRef, { onlineStatus: 'Online', lastSeen: serverTimestamp(), lastBreakStart: null });
+        } else {
+            // START BREAK (Stop active task first)
+            if (activeTask) await stopTask();
+            await updateDoc(userRef, { onlineStatus: 'Break', lastSeen: serverTimestamp(), lastBreakStart: Date.now() });
         }
-        await updateDoc(userRef, { onlineStatus: 'Online', lastSeen: serverTimestamp(), lastBreakStart: null });
-    } else {
-        // START BREAK (Stop active task first)
-        if (activeTask) await stopTask();
-        await updateDoc(userRef, { onlineStatus: 'Break', lastSeen: serverTimestamp(), lastBreakStart: Date.now() });
+    } catch (error) {
+        console.error("Break toggle failed:", error);
+        alert("Failed to toggle break. Please check your connection.");
+    } finally {
+        setBreakLoading(false); // Re-enable button
     }
   };
 
@@ -129,18 +143,26 @@ export default function Layout() {
           <div className="text-sm font-semibold text-text-sec mt-2 pl-8">{currentUser?.fullname}</div>
         </div>
 
-        {/* --- NEW: BREAK BUTTON AT THE TOP (For Members Only) --- */}
+        {/* --- BREAK BUTTON (With Loading Protection) --- */}
         {currentUser?.role !== 'ADMIN' && (
             <div className="px-4 pt-6 pb-2">
                 <button 
                 onClick={toggleBreak}
+                disabled={breakLoading} // <--- PHYSICALLY DISABLE
                 className={`w-full py-3 px-4 rounded-xl font-bold shadow-sm transition-all flex items-center justify-center gap-3 ${
+                    breakLoading ? 'opacity-70 cursor-wait' : ''
+                } ${
                     currentUser?.onlineStatus === 'Break' 
                     ? 'bg-amber-100 text-amber-800 border-2 border-amber-300 ring-2 ring-amber-50 shadow-inner'
                     : 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:shadow-lg hover:scale-[1.02] active:scale-95'
                 }`}
                 >
-                {currentUser?.onlineStatus === 'Break' ? (
+                {breakLoading ? (
+                    <>
+                        <Loader2 size={20} className="animate-spin" /> 
+                        <span className="text-sm">Processing...</span>
+                    </>
+                ) : currentUser?.onlineStatus === 'Break' ? (
                     <div className="text-center w-full">
                         <div className="text-[10px] uppercase tracking-widest opacity-80 mb-1 font-black">ON BREAK</div>
                         <div className="font-mono text-xl tabular-nums leading-none mb-1">
