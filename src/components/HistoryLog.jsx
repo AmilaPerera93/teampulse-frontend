@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { db } from '../firebase';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { Calendar, Clock, ZapOff, Coffee, ChevronDown, ChevronUp, CheckCircle, Activity } from 'lucide-react';
+import { Calendar, Clock, ZapOff, Coffee, ChevronDown, CheckCircle, Activity } from 'lucide-react';
 
 // Format Helper
 const formatMs = (ms) => {
@@ -24,12 +24,33 @@ export default function HistoryLog() {
     if (!currentUser) return;
     setLoading(true);
 
-    // 1. DEFINE QUERIES
-    const qTasks = query(collection(db, 'tasks'), where('assignedTo', '==', currentUser.fullname));
-    const qBreaks = query(collection(db, 'breaks'), where('userId', '==', currentUser.id));
-    const qPower = query(collection(db, 'power_logs'), where('userId', '==', currentUser.id));
+    // --- 1. CALCULATE DATE LIMIT (LAST 7 DAYS) ---
+    const dateObj = new Date();
+    dateObj.setDate(dateObj.getDate() - 7); 
+    const dateLimit = dateObj.toISOString().split('T')[0]; // Format: YYYY-MM-DD
 
-    // 2. SETUP REAL-TIME LISTENERS
+    // --- 2. DEFINE QUERIES WITH DATE LIMIT ---
+    // Note: These compound queries (assignedTo + date) require a Firestore Index.
+    // Check your browser console for the link to create them if data doesn't load.
+    const qTasks = query(
+        collection(db, 'tasks'), 
+        where('assignedTo', '==', currentUser.fullname),
+        where('date', '>=', dateLimit)
+    );
+
+    const qBreaks = query(
+        collection(db, 'breaks'), 
+        where('userId', '==', currentUser.id),
+        where('date', '>=', dateLimit)
+    );
+
+    const qPower = query(
+        collection(db, 'power_logs'), 
+        where('userId', '==', currentUser.id),
+        where('date', '>=', dateLimit)
+    );
+
+    // --- 3. SETUP REAL-TIME LISTENERS ---
     let tasksData = [];
     let breaksData = [];
     let powerData = [];
@@ -37,7 +58,6 @@ export default function HistoryLog() {
     const processData = () => {
         const grouped = {};
 
-        // Helper to init date object
         const initDate = (date) => {
             if (!grouped[date]) {
                 grouped[date] = { 
@@ -76,13 +96,12 @@ export default function HistoryLog() {
             grouped[p.date].powerList.push(p);
         });
 
-        // Convert to Array & Sort (Newest First)
+        // Sort: Newest First
         const sorted = Object.values(grouped).sort((a, b) => new Date(b.date) - new Date(a.date));
         setHistory(sorted);
         setLoading(false);
     };
 
-    // 3. LISTENERS
     const unsubTasks = onSnapshot(qTasks, (snap) => {
         tasksData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         processData();
@@ -98,7 +117,6 @@ export default function HistoryLog() {
         processData();
     });
 
-    // Cleanup listeners on unmount
     return () => {
         unsubTasks();
         unsubBreaks();
@@ -106,19 +124,19 @@ export default function HistoryLog() {
     };
   }, [currentUser]);
 
-  if (loading) return <div className="p-20 text-center text-slate-400 animate-pulse">Loading Live History...</div>;
+  if (loading) return <div className="p-20 text-center text-slate-400 animate-pulse">Loading Recent History...</div>;
 
   return (
     <div className="max-w-5xl mx-auto space-y-6 animate-in fade-in pb-20">
       <div>
         <h2 className="text-2xl font-bold text-slate-800">My Work History</h2>
-        <p className="text-slate-500">Live summary of your daily activity.</p>
+        <p className="text-slate-500">Summary of your activity for the last 7 days.</p>
       </div>
 
       {history.length === 0 && (
           <div className="text-center p-20 bg-white rounded-xl border border-dashed border-slate-200">
               <Calendar className="mx-auto text-slate-300 mb-4" size={48}/>
-              <h3 className="text-slate-500 font-medium">No work records found.</h3>
+              <h3 className="text-slate-500 font-medium">No records found in the last 7 days.</h3>
           </div>
       )}
 
@@ -129,7 +147,7 @@ export default function HistoryLog() {
 
               return (
                   <div key={day.date} className={`bg-white border rounded-xl overflow-hidden transition-all duration-300 ${isExpanded ? 'border-indigo-200 shadow-md ring-1 ring-indigo-50' : 'border-slate-200 shadow-sm'}`}>
-                      {/* SUMMARY HEADER */}
+                      {/* HEADER */}
                       <div 
                         onClick={() => setExpandedDate(isExpanded ? null : day.date)}
                         className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/50"
@@ -147,7 +165,6 @@ export default function HistoryLog() {
                               </div>
                           </div>
 
-                          {/* METRICS ROW */}
                           <div className="flex items-center gap-2 md:gap-4 flex-wrap">
                               <MetricBadge icon={Clock} label="Worked" value={formatMs(day.worked)} color="text-emerald-700 bg-emerald-50 border-emerald-100" />
                               <MetricBadge icon={Coffee} label="Breaks" value={formatMs(day.breaks)} color="text-blue-700 bg-blue-50 border-blue-100" />
@@ -159,11 +176,10 @@ export default function HistoryLog() {
                           </div>
                       </div>
 
-                      {/* EXPANDED DETAILS */}
+                      {/* DETAILS */}
                       {isExpanded && (
                           <div className="border-t border-slate-100 bg-slate-50/30 p-6 space-y-6 animate-in slide-in-from-top-2">
-                              
-                              {/* 1. TASKS LIST */}
+                              {/* TASKS */}
                               <div>
                                   <h4 className="text-xs font-bold text-slate-400 uppercase mb-3 flex items-center gap-2">
                                       <Activity size={14}/> Completed Tasks
@@ -183,7 +199,7 @@ export default function HistoryLog() {
                               </div>
 
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                  {/* 2. BREAKS LIST */}
+                                  {/* BREAKS */}
                                   <div>
                                       <h4 className="text-xs font-bold text-slate-400 uppercase mb-3 flex items-center gap-2">
                                           <Coffee size={14}/> Break History
@@ -199,7 +215,7 @@ export default function HistoryLog() {
                                       </div>
                                   </div>
 
-                                  {/* 3. POWER CUTS LIST */}
+                                  {/* POWER CUTS */}
                                   <div>
                                       <h4 className="text-xs font-bold text-slate-400 uppercase mb-3 flex items-center gap-2">
                                           <ZapOff size={14}/> Power Outages
