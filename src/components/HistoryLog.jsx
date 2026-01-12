@@ -124,7 +124,7 @@ export default function HistoryLog() {
     });
 
     return () => { unsubTasks(); unsubBreaks(); unsubPower(); };
-  }, [currentUser]);
+  }, [currentUser.id, currentUser.fullname]);  
 
   if (loading) return <div className="p-20 text-center text-slate-400 animate-pulse">Loading History...</div>;
 

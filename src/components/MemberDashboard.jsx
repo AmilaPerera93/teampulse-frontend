@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { db } from '../firebase';
 import { collection, query, where, onSnapshot, doc, updateDoc, addDoc, limit } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { useDate } from '../contexts/DateContext'; // Required for Date Filter
+import { useDate } from '../contexts/DateContext'; 
 import { formatMs } from '../utils/helpers';
 import Timer from './Timer';
 import { Play, Pause, CheckCircle, ZapOff, Calendar } from 'lucide-react';
@@ -18,15 +18,16 @@ export default function MemberDashboard() {
     if (!currentUser) return;
 
     // 1. LISTEN TO TASKS
-    // We listen to ALL tasks for this user, then filter locally for the selected date
-    // This is more efficient for small/medium teams than creating complex compound indexes
-    const qTasks = query(collection(db, 'tasks'), where('assignedTo', '==', currentUser.fullname));
+    const qTasks = query(
+        collection(db, 'tasks'), 
+        where('assignedTo', '==', currentUser.fullname)
+        // Optimization: You could add limit(50) here if history gets too big later
+    );
+
     const unsubTasks = onSnapshot(qTasks, (snapshot) => {
       const allTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
       // FILTER LOGIC:
-      // Show tasks assigned to the SELECTED DATE (History View)
-      // OR Show tasks that are CURRENTLY RUNNING (Active Work), regardless of date assignment
       const relevantTasks = allTasks.filter(t => t.date === globalDate || t.isRunning === true);
       
       relevantTasks.sort((a, b) => {
@@ -38,8 +39,7 @@ export default function MemberDashboard() {
       setLoading(false);
     });
 
-    // 2. LISTEN TO INTERRUPTIONS (Power Cuts)
-    // We only care if there is an ACTIVE power cut for the user right now
+    // 2. LISTEN TO INTERRUPTIONS
     const qInt = query(
         collection(db, 'interruptions'), 
         where('user', '==', currentUser.fullname),
@@ -55,7 +55,11 @@ export default function MemberDashboard() {
     });
 
     return () => { unsubTasks(); unsubInt(); };
-  }, [currentUser, globalDate]); // Re-run when date changes!
+    
+    // --- CRITICAL FIX BELOW: ---
+    // Changed [currentUser] to [currentUser.id, currentUser.fullname]
+    // This prevents re-fetching when the "Heartbeat" updates lastSeen.
+  }, [currentUser.id, currentUser.fullname, globalDate]); 
 
   // --- ACTIONS ---
 
@@ -105,10 +109,8 @@ export default function MemberDashboard() {
         const intRef = doc(db, 'interruptions', currentInterruption.id);
         const duration = Date.now() - currentInterruption.startTime;
         
-        // 1. Close the active interruption
         await updateDoc(intRef, { active: false, endTime: Date.now(), durationMs: duration });
         
-        // 2. Log it permanently to 'power_logs' for the timesheet
         await addDoc(collection(db, 'power_logs'), {
             userId: currentUser.id,
             userName: currentUser.fullname,
@@ -120,7 +122,6 @@ export default function MemberDashboard() {
 
     } else {
         // START POWER CUT
-        // 1. Stop any running tasks
         const running = tasks.find(t => t.isRunning);
         if(running) {
              const rRef = doc(db, 'tasks', running.id);
@@ -128,10 +129,8 @@ export default function MemberDashboard() {
              await updateDoc(rRef, { isRunning: false, elapsedMs: (running.elapsedMs||0) + rDur, lastStartTime: null });
         }
 
-        // 2. Create Active Interruption Log
-        // Note: We use globalDate here so it appears on the correct day's report
         await addDoc(collection(db, 'interruptions'), {
-            userId: currentUser.id, // Important for indexing
+            userId: currentUser.id, 
             user: currentUser.fullname,
             type: 'Power Cut',
             startTime: Date.now(),
