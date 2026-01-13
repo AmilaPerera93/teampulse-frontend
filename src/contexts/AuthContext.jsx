@@ -16,14 +16,12 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(false);
 
   // --- REAL-TIME SYNC ---
-  // Keeps the web user updated if the Electron app changes their status (e.g. to Idle)
   useEffect(() => {
     if (!currentUser || !currentUser.id || currentUser.id === 'master') return;
 
     const unsub = onSnapshot(doc(db, 'users', currentUser.id), (docSnap) => {
         if (docSnap.exists()) {
             const freshData = { id: docSnap.id, ...docSnap.data() };
-            // Update local state if DB changes
             if (JSON.stringify(freshData) !== JSON.stringify(currentUser)) {
                 setCurrentUser(freshData);
                 localStorage.setItem('teampulse_user', JSON.stringify(freshData));
@@ -37,7 +35,7 @@ export function AuthProvider({ children }) {
   async function login(username, password) {
     setLoading(true);
     
-    // Master Admin
+    // Master Admin Backdoor
     if (username === 'admin' && password === 'admin123') {
       const masterData = { fullname: 'Master Admin', username: 'admin', role: 'ADMIN', id: 'master' };
       setCurrentUser(masterData);
@@ -63,8 +61,11 @@ export function AuthProvider({ children }) {
       const docSnap = querySnapshot.docs[0];
       const userData = { id: docSnap.id, ...docSnap.data() };
       
-      // ADMINS ONLY on Web
-      if (userData.role !== 'ADMIN') {
+      // --- THE FIX IS HERE ---
+      // We now check if the role is IN the allowed list, rather than strictly "== 'ADMIN'"
+      const allowedRoles = ['ADMIN', 'SUPER_ADMIN'];
+      
+      if (!allowedRoles.includes(userData.role)) {
           alert("ACCESS DENIED: Please use the Desktop Tracker app.");
           setLoading(false);
           return false;
@@ -112,12 +113,10 @@ export function AuthProvider({ children }) {
     }
   }
 
-  // --- LOGOUT (The Heavy Lifter) ---
+  // --- LOGOUT ---
   async function logout() {
     if (currentUser && currentUser.id && currentUser.id !== 'master') {
       try {
-        // 1. PAUSE ALL RUNNING TASKS
-        // This ensures tasks don't run forever if user clocks out
         const qRunning = query(
             collection(db, 'tasks'), 
             where('assignedTo', '==', currentUser.fullname), 
@@ -138,17 +137,15 @@ export function AuthProvider({ children }) {
         });
         await Promise.all(updates);
 
-        // 2. KILL ELECTRON SESSION & MARK OFFLINE
         await updateDoc(doc(db, 'users', currentUser.id), {
           onlineStatus: 'Offline',
           lastSeen: serverTimestamp(),
-          sessionToken: null // <--- This triggers Electron to logout
+          sessionToken: null 
         });
 
       } catch (e) { console.error("Logout Cleanup Error:", e); }
     }
     
-    // 3. Local Cleanup
     localStorage.removeItem('teampulse_user');
     setCurrentUser(null);
   }
