@@ -11,7 +11,7 @@ import { doc, updateDoc, addDoc, collection, serverTimestamp } from 'firebase/fi
 import { 
   Zap, LayoutGrid, Users, FolderOpen, 
   CheckCircle, History, LogOut, Calendar, Plus,
-  Briefcase, DollarSign, BarChart3, Pause, Play, ZapOff, Coffee, Lock, Loader2
+  Briefcase, DollarSign, BarChart3, Pause, Play, ZapOff, Coffee, Lock, Loader2, MessageSquare
 } from 'lucide-react';
 
 // Format Helper
@@ -191,7 +191,7 @@ export default function Layout() {
               <NavItem to="/projects" icon={FolderOpen} label="Projects" />
               <NavItem to="/leaves" icon={Calendar} label="Leave Requests" />
               <NavItem to="/resources" icon={BarChart3} label="Resource Plan" />
-               
+              <NavItem to="/chat" icon={MessageSquare} label="Team Chat" /> 
 
               <div className="px-6 text-xs font-extrabold text-text-sec mt-6 mb-3 tracking-wider">BUSINESS</div>
               <NavItem to="/crm" icon={Briefcase} label="CRM & Leads" />
@@ -203,7 +203,7 @@ export default function Layout() {
               <NavItem to="/" icon={CheckCircle} label="Today's Tasks" />
               <NavItem to="/leaves" icon={Calendar} label="My Leave" />
               <NavItem to="/history" icon={History} label="History Log" />
-               
+              <NavItem to="/chat" icon={MessageSquare} label="Team Chat" /> 
             </>
           )}
         </div>
