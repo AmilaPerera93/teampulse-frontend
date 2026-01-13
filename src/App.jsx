@@ -13,7 +13,8 @@ import InvoiceManager from './components/InvoiceManager';
 import ResourcePlanner from './components/ResourcePlanner';
 import LeaveManager from './components/LeaveManager';
 import HistoryLog from './components/HistoryLog';
- 
+import GameZone from './components/GameZone';
+
 function ProtectedRoute({ children }) {
   const { currentUser } = useAuth();
   if (!currentUser) return <Navigate to="/login" replace />;
@@ -45,6 +46,7 @@ export default function App() {
           <Route path="resources" element={<ResourcePlanner />} />
           <Route path="leaves" element={<LeaveManager />} />
           <Route path="/history" element={<HistoryLog />} />
+          <Route path="game" element={<GameZone />} />
            
         </Route>
       </Routes>
