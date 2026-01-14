@@ -22,7 +22,7 @@ export default function LeaveManager() {
 
   const [loading, setLoading] = useState(true);
 
-  // --- INITIAL DATA FETCH ---
+ // --- INITIAL DATA FETCH ---
   useEffect(() => {
     if (!currentUser || !currentUser.id) return;
     setLoading(true);
@@ -36,7 +36,6 @@ export default function LeaveManager() {
                 setQuotas(snap.data());
                 setConfigData(snap.data());
             } else {
-                // Initialize if missing
                 await setDoc(docRef, { annual: 14, casual: 7, sick: 7 });
             }
         } catch (e) { console.error("Settings fetch error:", e); }
@@ -44,24 +43,28 @@ export default function LeaveManager() {
     fetchSettings();
 
     // 2. Fetch Leaves based on Role
+    let unsub; // Define unsub variable
+    
     if (currentUser.role === 'ADMIN') {
         const q = query(collection(db, 'leaves'), orderBy('createdAt', 'desc'));
-        const unsub = onSnapshot(q, (snap) => {
+        unsub = onSnapshot(q, (snap) => {
             setAllLeaves(snap.docs.map(d => ({ id: d.id, ...d.data() })));
             setLoading(false);
         });
-        return () => unsub();
     } else {
         const q = query(collection(db, 'leaves'), where('userId', '==', currentUser.id));
-        const unsub = onSnapshot(q, (snap) => {
+        unsub = onSnapshot(q, (snap) => {
             const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
             list.sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
             setLeaves(list);
             setLoading(false);
         });
-        return () => unsub();
     }
-  }, [currentUser]);
+
+    return () => { if(unsub) unsub(); };
+    
+   
+  }, [currentUser?.id, currentUser?.role]);
 
   // --- HANDLERS ---
 
