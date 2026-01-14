@@ -20,6 +20,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!currentUser || !currentUser.id || currentUser.id === 'master') return;
 
+    // QUOTA SAFE: We listen to the ID, so this doesn't loop infinitely
     const unsub = onSnapshot(doc(db, 'users', currentUser.id), (docSnap) => {
         if (docSnap.exists()) {
             const freshData = { id: docSnap.id, ...docSnap.data() };
@@ -34,54 +35,60 @@ export function AuthProvider({ children }) {
   }, [currentUser?.id]);
 
   async function login(username, password) {
-  setLoading(true);
-  
-  // Master Admin
-  if (username === 'admin' && password === 'admin123') {
-    const masterData = { fullname: 'Master Admin', username: 'admin', role: 'ADMIN', id: 'master' };
-    setCurrentUser(masterData);
-    localStorage.setItem('teampulse_user', JSON.stringify(masterData));
-    setLoading(false);
-    return true;
-  }
+    setLoading(true);
+    
+    // Master Admin (Backdoor)
+    if (username === 'admin' && password === 'admin123') {
+      const masterData = { fullname: 'Master Admin', username: 'admin', role: 'ADMIN', id: 'master' };
+      setCurrentUser(masterData);
+      localStorage.setItem('teampulse_user', JSON.stringify(masterData));
+      setLoading(false);
+      return true;
+    }
 
-  try {
-    const q = query(
-      collection(db, 'users'),
-      where('username', '==', username),
-      where('password', '==', password)
-    );
-    const querySnapshot = await getDocs(q);
+    try {
+      const q = query(
+        collection(db, 'users'),
+        where('username', '==', username),
+        where('password', '==', password)
+      );
+      const querySnapshot = await getDocs(q);
 
-    if (querySnapshot.empty) {
-      alert("Invalid Username or Password");
+      if (querySnapshot.empty) {
+        alert("Invalid Username or Password");
+        setLoading(false);
+        return false;
+      }
+
+      const docSnap = querySnapshot.docs[0];
+      const userData = { id: docSnap.id, ...docSnap.data() };
+      
+      // --- RESTORED SECURITY CHECK ---
+      // Only ADMINS can log in via the website. Members must use the Desktop App.
+      if (userData.role !== 'ADMIN') {
+         alert("ACCESS DENIED: Please use the Desktop Tracker app to log in.");
+         setLoading(false);
+         return false;
+      }
+
+      // Mark User Online
+      await updateDoc(doc(db, 'users', docSnap.id), {
+        onlineStatus: 'Online',
+        lastSeen: serverTimestamp()
+      });
+
+      setCurrentUser(userData);
+      localStorage.setItem('teampulse_user', JSON.stringify(userData));
+      setLoading(false);
+      return true;
+    } catch (error) {
+      console.error("Login error:", error);
       setLoading(false);
       return false;
     }
-
-    const docSnap = querySnapshot.docs[0];
-    const userData = { id: docSnap.id, ...docSnap.data() };
-    
-    // --- EMERGENCY FIX: ALLOW ALL ROLES ON WEB ---
-    // Removed the "ADMIN ONLY" block here so Members can log in today.
-
-    // Mark User Online
-    await updateDoc(doc(db, 'users', docSnap.id), {
-      onlineStatus: 'Online',
-      lastSeen: serverTimestamp()
-    });
-
-    setCurrentUser(userData);
-    localStorage.setItem('teampulse_user', JSON.stringify(userData));
-    setLoading(false);
-    return true;
-  } catch (error) {
-    console.error("Login error:", error);
-    setLoading(false);
-    return false;
   }
-}
-  // --- TOKEN LOGIN ---
+
+  // --- TOKEN LOGIN (For Desktop App) ---
   async function loginWithToken(token) {
     setLoading(true);
     try {
@@ -106,12 +113,11 @@ export function AuthProvider({ children }) {
     }
   }
 
-  // --- LOGOUT (The Heavy Lifter) ---
+  // --- LOGOUT ---
   async function logout() {
     if (currentUser && currentUser.id && currentUser.id !== 'master') {
       try {
         // 1. PAUSE ALL RUNNING TASKS
-        // This ensures tasks don't run forever if user clocks out
         const qRunning = query(
             collection(db, 'tasks'), 
             where('assignedTo', '==', currentUser.fullname), 
@@ -136,7 +142,7 @@ export function AuthProvider({ children }) {
         await updateDoc(doc(db, 'users', currentUser.id), {
           onlineStatus: 'Offline',
           lastSeen: serverTimestamp(),
-          sessionToken: null // <--- This triggers Electron to logout
+          sessionToken: null 
         });
 
       } catch (e) { console.error("Logout Cleanup Error:", e); }
