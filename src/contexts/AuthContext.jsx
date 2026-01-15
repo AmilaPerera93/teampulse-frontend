@@ -1,6 +1,15 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
 import { db } from '../firebase';
-import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp, onSnapshot } from 'firebase/firestore'; 
+import { 
+  collection, 
+  query, 
+  where, 
+  getDocs, 
+  doc, 
+  updateDoc, 
+  serverTimestamp, 
+  onSnapshot 
+} from 'firebase/firestore'; 
 
 const AuthContext = createContext();
 
@@ -14,45 +23,53 @@ export function AuthProvider({ children }) {
     return savedUser ? JSON.parse(savedUser) : null;
   });
   const [loading, setLoading] = useState(false);
+  
+  // A ref to prevent the "Logout Loop"
+  const isLoggingOut = useRef(false);
 
   // --- REAL-TIME SYNC & SECURITY GUARD ---
   useEffect(() => {
-    if (!currentUser || !currentUser.id || currentUser.id === 'master') return;
+    // Stop if no user, if it's the master admin, or if we are currently logging out
+    if (!currentUser || !currentUser.id || currentUser.id === 'master' || isLoggingOut.current) return;
 
     // Listen to the user's record in real-time
     const unsub = onSnapshot(doc(db, 'users', currentUser.id), (docSnap) => {
+        // If we started logging out while the snapshot was in flight, ignore it
+        if (isLoggingOut.current) return;
+
         if (docSnap.exists()) {
             const freshData = { id: docSnap.id, ...docSnap.data() };
             
-            // 🚨 SECURITY GUARD 🚨
-            // If a MEMBER (not Admin) is logged in but has NO sessionToken in the DB,
-            // it means the Desktop App is NOT connected.
+            // 🚨 SECURITY GUARD (PATCHED) 🚨
+            // Check if a MEMBER has lost their session token
             if (freshData.role !== 'ADMIN' && !freshData.sessionToken) {
-                 // Only trigger if we currently think we have a session, to prevent loops
-                 if (currentUser.role !== 'ADMIN') { 
-                     console.warn("Security Alert: No Desktop Session detected. Force logging out.");
-                     logout(); // <--- KICK THEM OUT
-                     return;
-                 }
+                 console.warn("Security Alert: No Desktop Session detected. Terminating session.");
+                 logout(); 
+                 return;
             }
 
-            // Normal Sync: Update local state if DB changes
+            // Normal Sync: Only update local state if data actually changed
+            // Using JSON.stringify ensures we don't trigger re-renders for identical data
             if (JSON.stringify(freshData) !== JSON.stringify(currentUser)) {
                 setCurrentUser(freshData);
                 localStorage.setItem('teampulse_user', JSON.stringify(freshData));
             }
         } else {
-            // If the user document was deleted, log them out
+            // User deleted from DB
             logout();
         }
+    }, (error) => {
+        console.error("Auth Listener Error:", error);
     });
+
     return () => unsub();
-  }, [currentUser?.id]);
+  }, [currentUser?.id]); // Only re-run if the User ID physically changes
 
   async function login(username, password) {
     setLoading(true);
+    isLoggingOut.current = false; // Reset flag on login attempt
     
-    // Master Admin
+    // Master Admin Login
     if (username === 'admin' && password === 'admin123') {
       const masterData = { fullname: 'Master Admin', username: 'admin', role: 'ADMIN', id: 'master' };
       setCurrentUser(masterData);
@@ -78,15 +95,13 @@ export function AuthProvider({ children }) {
       const docSnap = querySnapshot.docs[0];
       const userData = { id: docSnap.id, ...docSnap.data() };
       
-      // 🚨 LOGIN BLOCK 🚨
-      // Strictly prevent Members from using the Web Form
+      // Block members from web login
       if (userData.role !== 'ADMIN') {
          alert("ACCESS DENIED: Team Members must use the Desktop App.");
          setLoading(false);
          return false;
       }
 
-      // Mark Admin Online
       await updateDoc(doc(db, 'users', docSnap.id), {
         onlineStatus: 'Online',
         lastSeen: serverTimestamp()
@@ -103,17 +118,13 @@ export function AuthProvider({ children }) {
     }
   }
 
-  // --- TOKEN LOGIN (For Desktop App) ---
   async function loginWithToken(token) {
     setLoading(true);
+    isLoggingOut.current = false;
     try {
         const q = query(collection(db, 'users'), where('sessionToken', '==', token));
         const snapshot = await getDocs(q);
-
-        if (snapshot.empty) {
-            setLoading(false);
-            return false;
-        }
+        if (snapshot.empty) { setLoading(false); return false; }
 
         const docSnap = snapshot.docs[0];
         const userData = { id: docSnap.id, ...docSnap.data() };
@@ -128,12 +139,13 @@ export function AuthProvider({ children }) {
     }
   }
 
-  // --- LOGOUT ---
   async function logout() {
-    // Only try to update DB if we have a valid user
+    // Set flag immediately to stop the onSnapshot loop
+    isLoggingOut.current = true;
+
     if (currentUser && currentUser.id && currentUser.id !== 'master') {
       try {
-        // 1. Pause Tasks
+        // 1. Pause any running tasks
         const qRunning = query(
             collection(db, 'tasks'), 
             where('assignedTo', '==', currentUser.fullname), 
@@ -154,17 +166,17 @@ export function AuthProvider({ children }) {
         });
         await Promise.all(updates);
 
-        // 2. Clear Session in DB
+        // 2. Clear Session in Database
         await updateDoc(doc(db, 'users', currentUser.id), {
           onlineStatus: 'Offline',
           lastSeen: serverTimestamp(),
           sessionToken: null 
         });
 
-      } catch (e) { console.error("Logout Cleanup Error:", e); }
+      } catch (e) { console.error("Logout Error:", e); }
     }
     
-    // 3. Nuke Local State
+    // 3. Clean up local state
     localStorage.removeItem('teampulse_user');
     setCurrentUser(null);
   }
