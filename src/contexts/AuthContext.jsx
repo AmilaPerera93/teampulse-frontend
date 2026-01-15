@@ -15,20 +15,35 @@ export function AuthProvider({ children }) {
   });
   const [loading, setLoading] = useState(false);
 
-  // --- REAL-TIME SYNC ---
-  // Keeps the web user updated if the Electron app changes their status (e.g. to Idle)
+  // --- REAL-TIME SYNC & SECURITY GUARD ---
   useEffect(() => {
     if (!currentUser || !currentUser.id || currentUser.id === 'master') return;
 
-    // QUOTA SAFE: We listen to the ID, so this doesn't loop infinitely
+    // Listen to the user's record in real-time
     const unsub = onSnapshot(doc(db, 'users', currentUser.id), (docSnap) => {
         if (docSnap.exists()) {
             const freshData = { id: docSnap.id, ...docSnap.data() };
-            // Update local state if DB changes
+            
+            // 🚨 SECURITY GUARD 🚨
+            // If a MEMBER (not Admin) is logged in but has NO sessionToken in the DB,
+            // it means the Desktop App is NOT connected.
+            if (freshData.role !== 'ADMIN' && !freshData.sessionToken) {
+                 // Only trigger if we currently think we have a session, to prevent loops
+                 if (currentUser.role !== 'ADMIN') { 
+                     console.warn("Security Alert: No Desktop Session detected. Force logging out.");
+                     logout(); // <--- KICK THEM OUT
+                     return;
+                 }
+            }
+
+            // Normal Sync: Update local state if DB changes
             if (JSON.stringify(freshData) !== JSON.stringify(currentUser)) {
                 setCurrentUser(freshData);
                 localStorage.setItem('teampulse_user', JSON.stringify(freshData));
             }
+        } else {
+            // If the user document was deleted, log them out
+            logout();
         }
     });
     return () => unsub();
@@ -37,7 +52,7 @@ export function AuthProvider({ children }) {
   async function login(username, password) {
     setLoading(true);
     
-    // Master Admin (Backdoor)
+    // Master Admin
     if (username === 'admin' && password === 'admin123') {
       const masterData = { fullname: 'Master Admin', username: 'admin', role: 'ADMIN', id: 'master' };
       setCurrentUser(masterData);
@@ -63,15 +78,15 @@ export function AuthProvider({ children }) {
       const docSnap = querySnapshot.docs[0];
       const userData = { id: docSnap.id, ...docSnap.data() };
       
-      // --- RESTORED SECURITY CHECK ---
-      // Only ADMINS can log in via the website. Members must use the Desktop App.
+      // 🚨 LOGIN BLOCK 🚨
+      // Strictly prevent Members from using the Web Form
       if (userData.role !== 'ADMIN') {
-         alert("ACCESS DENIED: Please use the Desktop Tracker app to log in.");
+         alert("ACCESS DENIED: Team Members must use the Desktop App.");
          setLoading(false);
          return false;
       }
 
-      // Mark User Online
+      // Mark Admin Online
       await updateDoc(doc(db, 'users', docSnap.id), {
         onlineStatus: 'Online',
         lastSeen: serverTimestamp()
@@ -115,9 +130,10 @@ export function AuthProvider({ children }) {
 
   // --- LOGOUT ---
   async function logout() {
+    // Only try to update DB if we have a valid user
     if (currentUser && currentUser.id && currentUser.id !== 'master') {
       try {
-        // 1. PAUSE ALL RUNNING TASKS
+        // 1. Pause Tasks
         const qRunning = query(
             collection(db, 'tasks'), 
             where('assignedTo', '==', currentUser.fullname), 
@@ -138,7 +154,7 @@ export function AuthProvider({ children }) {
         });
         await Promise.all(updates);
 
-        // 2. KILL ELECTRON SESSION & MARK OFFLINE
+        // 2. Clear Session in DB
         await updateDoc(doc(db, 'users', currentUser.id), {
           onlineStatus: 'Offline',
           lastSeen: serverTimestamp(),
@@ -148,7 +164,7 @@ export function AuthProvider({ children }) {
       } catch (e) { console.error("Logout Cleanup Error:", e); }
     }
     
-    // 3. Local Cleanup
+    // 3. Nuke Local State
     localStorage.removeItem('teampulse_user');
     setCurrentUser(null);
   }
@@ -158,7 +174,10 @@ export function AuthProvider({ children }) {
     login,
     loginWithToken,
     logout,
-    loading
+    loading,
+    resetUserPassword: async (uid, newPass) => {
+        await updateDoc(doc(db, 'users', uid), { password: newPass });
+    }
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
