@@ -1,257 +1,153 @@
 import React, { useEffect, useState } from 'react';
-import { db } from '../firebase';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  serverTimestamp, 
-  getDocs 
-} from 'firebase/firestore';
+import { fetchTrainings, assignTraining, fetchUsers } from '../services/api'; // Azure API
 import { useAuth } from '../contexts/AuthContext';
-import { 
-  BookOpen, Play, CheckCircle, Plus, User, 
-  ExternalLink, Pencil, Trash2, X, Save 
-} from 'lucide-react';
+import { BookOpen, Play, CheckCircle, Plus, ExternalLink, Clock } from 'lucide-react';
 
-export default function TrainingManager() {
+export default function Academy() {
   const { currentUser } = useAuth();
   const [trainings, setTrainings] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingId, setEditingId] = useState(null); // Null = Assigning, ID = Editing
+  const [users, setUsers] = useState([]); // For Admin dropdown
   const [loading, setLoading] = useState(true);
+  
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [formData, setFormData] = useState({ title: '', link: '', assignedTo: '', type: 'Video' });
 
-  // Form States
-  const [formData, setFormData] = useState({ title: '', platform: '', assignedTo: '', description: '' });
-  const [reportUrl, setReportUrl] = useState('');
-  const [completingId, setCompletingId] = useState(null);
-
-  useEffect(() => {
-    if (!currentUser?.id) return;
-
-    // 1. Setup Listener for Trainings
-    const q = currentUser.role === 'ADMIN' 
-      ? collection(db, 'trainings') 
-      : query(collection(db, 'trainings'), where('assignedTo', '==', currentUser.fullname));
-    
-    const unsub = onSnapshot(q, (snap) => {
-      setTrainings(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    });
-
-    // 2. Fetch User List for Admin (One-time fetch)
-    if(currentUser.role === 'ADMIN') {
-        getDocs(query(collection(db, 'users'), where('role', '==', 'MEMBER'))).then(snap => {
-            setUsers(snap.docs.map(d => d.data().fullname));
-        });
-    }
-
-    return () => unsub();
-  }, [currentUser?.id]);
-
-  // CREATE OR UPDATE
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const loadData = async () => {
+    setLoading(true);
     try {
-        if (editingId) {
-            await updateDoc(doc(db, 'trainings', editingId), { ...formData });
-        } else {
-            await addDoc(collection(db, 'trainings'), {
-                ...formData,
-                status: 'Assigned',
-                createdAt: serverTimestamp(),
-                reportUrl: null
-            });
+        // Admin sees all, User sees theirs
+        const assignedTo = currentUser.role === 'ADMIN' ? null : currentUser.fullname;
+        const data = await fetchTrainings(assignedTo);
+        setTrainings(data);
+
+        if (currentUser.role === 'ADMIN') {
+            const uData = await fetchUsers();
+            setUsers(uData.filter(u => u.role === 'MEMBER'));
         }
-        closeModal();
-    } catch (err) { console.error(err); }
+    } catch (e) { console.error(e); }
+    setLoading(false);
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this training? This cannot be undone.")) return;
-    try {
-        await deleteDoc(doc(db, 'trainings', id));
-    } catch (err) { console.error(err); }
+  useEffect(() => { loadData(); }, [currentUser]);
+
+  const handleAssign = async (e) => {
+      e.preventDefault();
+      if (!formData.title || !formData.assignedTo) return;
+      
+      try {
+          await assignTraining({
+              ...formData,
+              assignedAt: new Date().toISOString(),
+              status: 'Pending'
+          });
+          setIsModalOpen(false);
+          setFormData({ title: '', link: '', assignedTo: '', type: 'Video' });
+          loadData();
+      } catch (e) { alert("Failed to assign training"); }
   };
 
-  const openEdit = (training) => {
-    setEditingId(training.id);
-    setFormData({ 
-        title: training.title, 
-        platform: training.platform, 
-        assignedTo: training.assignedTo, 
-        description: training.description 
-    });
-    setIsModalOpen(true);
+  const markComplete = async (id) => {
+      // In a real app, you'd have an updateTraining endpoint. 
+      // For now, we can reuse the "saveTraining" style or assume you added a PATCH endpoint.
+      // Assuming you added the PUT logic to 'manageTrainings.js' as I shared earlier:
+      if (!confirm("Mark this training as completed?")) return;
+      
+      try {
+          // We use the fetch API directly if api.js helper is missing for updates
+          await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:7071/api'}/manageTrainings`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id, assignedTo: currentUser.fullname, status: 'Completed' })
+          });
+          loadData();
+      } catch(e) { alert("Update failed"); }
   };
 
-  const closeModal = () => {
-    setIsModalOpen(false);
-    setEditingId(null);
-    setFormData({ title: '', platform: '', assignedTo: '', description: '' });
-  };
-
-  const startTraining = async (training) => {
-    await updateDoc(doc(db, 'trainings', training.id), { status: 'Started' });
-    await addDoc(collection(db, 'tasks'), {
-      description: `🎓 TRAINING: ${training.title}`,
-      project: 'Academy',
-      assignedTo: currentUser.fullname,
-      date: new Date().toISOString().split('T')[0],
-      status: 'In Progress',
-      isRunning: true,
-      lastStartTime: Date.now(),
-      elapsedMs: 0
-    });
-  };
-
-  const completeTraining = async () => {
-    if (!reportUrl.trim()) return alert("Please provide the link to your report.");
-    await updateDoc(doc(db, 'trainings', completingId), { 
-        reportUrl, status: 'Completed', completedAt: serverTimestamp() 
-    });
-    setCompletingId(null);
-    setReportUrl('');
-  };
-
-  if (loading) return <div className="p-20 text-center text-slate-400 animate-pulse">Syncing Academy...</div>;
+  if (loading) return <div className="p-20 text-center animate-pulse text-slate-400">Loading Academy...</div>;
 
   return (
-    <div className="max-w-7xl mx-auto pb-20 animate-in fade-in">
-      <div className="flex justify-between items-center mb-10">
+    <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in pb-20">
+      
+      <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-4xl font-black text-slate-900 tracking-tight">Academy</h2>
-          <p className="text-slate-500 font-medium">Professional certifications & training path.</p>
+            <h2 className="text-2xl font-bold text-slate-800">Training Academy</h2>
+            <p className="text-slate-500">Upskill and track progress.</p>
         </div>
         {currentUser.role === 'ADMIN' && (
-          <button onClick={() => setIsModalOpen(true)} className="btn btn-primary shadow-xl shadow-indigo-100 px-6">
-            <Plus size={20} className="mr-2"/> Assign Course
-          </button>
+            <button onClick={() => setIsModalOpen(true)} className="btn btn-primary">
+                <Plus size={18} /> Assign Training
+            </button>
         )}
       </div>
 
-      {/* CREATE / EDIT MODAL */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <form onSubmit={handleSubmit} className="bg-white p-8 rounded-[2rem] w-full max-w-md shadow-2xl animate-in zoom-in-95">
-            <div className="flex justify-between items-center mb-6">
-                <h3 className="text-2xl font-bold text-slate-800">{editingId ? 'Edit Training' : 'Assign Training'}</h3>
-                <button type="button" onClick={closeModal} className="p-2 hover:bg-slate-100 rounded-full text-slate-400"><X size={20}/></button>
-            </div>
-            
-            <div className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Course Title</label>
-                <input className="input-field" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} required />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Platform</label>
-                <input className="input-field" value={formData.platform} onChange={e => setFormData({...formData, platform: e.target.value})} required />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Assign To</label>
-                <select className="input-field" value={formData.assignedTo} onChange={e => setFormData({...formData, assignedTo: e.target.value})} required>
-                  <option value="">Select Member...</option>
-                  {users.map(u => <option key={u} value={u}>{u}</option>)}
-                </select>
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Notes</label>
-                <textarea className="input-field h-24 pt-3" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})}></textarea>
-              </div>
-            </div>
-
-            <div className="flex gap-3 mt-8">
-              <button type="button" onClick={closeModal} className="btn btn-ghost flex-1">Cancel</button>
-              <button type="submit" className="btn btn-primary flex-1 shadow-lg shadow-indigo-100">
-                {editingId ? <><Save size={18} className="mr-2"/> Update</> : 'Assign Now'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* COMPLETION MODAL */}
-      {completingId && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="bg-white p-8 rounded-[2rem] w-full max-w-md shadow-2xl animate-in zoom-in-95">
-            <h3 className="text-2xl font-bold mb-2 text-slate-800">Finalize Training</h3>
-            <p className="text-sm text-slate-500 mb-8 leading-relaxed">Paste the link to your report (Google Drive/Doc/Notion) to mark this as finished.</p>
-            <div className="flex flex-col gap-4">
-               <input className="input-field" placeholder="https://..." value={reportUrl} onChange={e => setReportUrl(e.target.value)} autoFocus />
-               <div className="flex gap-3">
-                 <button onClick={() => setCompletingId(null)} className="btn btn-ghost flex-1">Cancel</button>
-                 <button onClick={completeTraining} className="btn btn-primary flex-1">Submit & Close</button>
-               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* LISTING */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {trainings.map(t => (
-          <div key={t.id} className="bg-white rounded-[2rem] border border-slate-200 shadow-sm p-8 flex flex-col group hover:border-indigo-400 hover:shadow-2xl hover:shadow-indigo-50/50 transition-all duration-500 relative">
-            
-            {/* ADMIN ACTIONS */}
-            {currentUser.role === 'ADMIN' && (
-                <div className="absolute top-6 right-6 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                    <button onClick={() => openEdit(t)} className="p-2 bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 rounded-xl transition-colors"><Pencil size={16}/></button>
-                    <button onClick={() => handleDelete(t.id)} className="p-2 bg-slate-50 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-xl transition-colors"><Trash2 size={16}/></button>
+            <div key={t.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow group">
+                <div className={`h-2 bg-gradient-to-r ${t.status === 'Completed' ? 'from-emerald-400 to-emerald-600' : 'from-indigo-400 to-purple-600'}`}></div>
+                <div className="p-6">
+                    <div className="flex justify-between items-start mb-4">
+                        <div className={`p-2 rounded-lg ${t.status === 'Completed' ? 'bg-emerald-50 text-emerald-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                            {t.status === 'Completed' ? <CheckCircle size={24}/> : <BookOpen size={24}/>}
+                        </div>
+                        {t.status === 'Pending' && currentUser.fullname === t.assignedTo && (
+                            <button onClick={() => markComplete(t.id)} className="text-xs font-bold text-slate-400 hover:text-emerald-600 border border-slate-200 px-2 py-1 rounded hover:bg-emerald-50 transition-colors">
+                                Mark Done
+                            </button>
+                        )}
+                    </div>
+                    
+                    <h3 className="font-bold text-lg text-slate-800 mb-1">{t.title}</h3>
+                    <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4">{t.type}</div>
+
+                    <div className="flex items-center gap-2 text-sm text-slate-500 mb-6">
+                        <Clock size={14}/> 
+                        <span>Assigned: {new Date(t.assignedAt).toLocaleDateString()}</span>
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-100 flex justify-between items-center">
+                        <div className="flex flex-col">
+                            <span className="text-[10px] uppercase font-bold text-slate-400">Assigned To</span>
+                            <span className="text-sm font-bold text-slate-700">{t.assignedTo}</span>
+                        </div>
+                        {t.link && (
+                            <a href={t.link} target="_blank" rel="noreferrer" className="btn btn-sm bg-slate-900 text-white hover:bg-slate-800 text-xs">
+                                Open <ExternalLink size={12} className="ml-1"/>
+                            </a>
+                        )}
+                    </div>
                 </div>
-            )}
-
-            <div className="flex justify-between items-start mb-6">
-              <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all duration-300 shadow-sm">
-                <BookOpen size={28} />
-              </div>
-              <span className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border mt-2 ${
-                t.status === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 
-                t.status === 'Started' ? 'bg-amber-50 text-amber-700 border-amber-100 animate-pulse' : 'bg-slate-50 text-slate-500 border-slate-100'
-              }`}>
-                {t.status}
-              </span>
             </div>
-
-            <h3 className="text-2xl font-bold text-slate-800 leading-tight mb-1 pr-10">{t.title}</h3>
-            <p className="text-indigo-600 font-bold text-xs uppercase tracking-[0.2em] mb-4">{t.platform}</p>
-            
-            <div className="flex-1 p-4 bg-slate-50 rounded-2xl text-xs text-slate-500 italic border border-slate-100 leading-relaxed">
-                "{t.description || 'No special instructions provided.'}"
-            </div>
-
-            <div className="mt-8 pt-6 border-t border-slate-50 flex flex-col gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-500">{t.assignedTo.charAt(0)}</div>
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{t.assignedTo}</span>
-              </div>
-
-              {t.status === 'Assigned' && currentUser.fullname === t.assignedTo && (
-                <button onClick={() => startTraining(t)} className="btn btn-primary w-full justify-center py-4 rounded-2xl">
-                  <Play size={18} fill="currentColor" className="mr-2"/> Start Certification
-                </button>
-              )}
-
-              {t.status === 'Started' && currentUser.fullname === t.assignedTo && (
-                <button onClick={() => setCompletingId(t.id)} className="btn bg-emerald-600 text-white hover:bg-emerald-700 w-full justify-center py-4 rounded-2xl shadow-lg shadow-emerald-100">
-                  <CheckCircle size={18} className="mr-2"/> Mark as Finished
-                </button>
-              )}
-
-              {t.status === 'Completed' && t.reportUrl && (
-                <a href={t.reportUrl} target="_blank" rel="noreferrer" className="btn bg-slate-900 text-white w-full justify-center py-4 rounded-2xl hover:bg-black transition-colors">
-                  <ExternalLink size={18} className="mr-2"/> View Report Link
-                </a>
-              )}
-            </div>
-          </div>
         ))}
       </div>
+
+      {trainings.length === 0 && (
+          <div className="text-center p-20 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
+              No trainings assigned yet.
+          </div>
+      )}
+
+      {/* ASSIGN MODAL */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white p-6 rounded-2xl w-full max-w-md shadow-2xl">
+                <h3 className="text-lg font-bold mb-4 text-slate-800">Assign New Training</h3>
+                <form onSubmit={handleAssign} className="space-y-4">
+                    <input className="input-field" placeholder="Training Title" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} required />
+                    <input className="input-field" placeholder="Link (URL)" value={formData.link} onChange={e => setFormData({...formData, link: e.target.value})} required />
+                    
+                    <select className="input-field" value={formData.assignedTo} onChange={e => setFormData({...formData, assignedTo: e.target.value})} required>
+                        <option value="" disabled>Select Member</option>
+                        {users.map(u => <option key={u.id} value={u.fullname}>{u.fullname}</option>)}
+                    </select>
+
+                    <div className="flex justify-end gap-2 pt-2">
+                        <button type="button" onClick={() => setIsModalOpen(false)} className="btn btn-ghost">Cancel</button>
+                        <button type="submit" className="btn btn-primary">Assign</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+      )}
     </div>
   );
 }

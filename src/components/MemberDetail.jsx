@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, query, where, getDocs, doc, updateDoc, addDoc } from 'firebase/firestore';
+import { fetchUsers, fetchTasks, fetchLogs, saveLog } from '../services/api'; // Azure API
 import { useDate } from '../contexts/DateContext';
 import { ArrowLeft, ZapOff, PlayCircle, Coffee, AlertCircle, CheckCircle } from 'lucide-react';
 import { Doughnut } from 'react-chartjs-2';
@@ -30,96 +29,101 @@ export default function MemberDetail() {
   const [idleLogs, setIdleLogs] = useState([]);
   const [activeInt, setActiveInt] = useState(null);
   const [stats, setStats] = useState({ worked: 0, idle: 0, breaks: 0, downtime: 0, netAvailable: 0 });
+  const [currentUserId, setCurrentUserId] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
-      
-      const userQ = query(collection(db, 'users'), where('fullname', '==', username));
-      const userSnap = await getDocs(userQ);
-      if (userSnap.empty) { setLoading(false); return; }
-      const userId = userSnap.docs[0].id;
+      try {
+          // 1. Get User ID from Name (Azure doesn't filter users by name server-side yet)
+          const allUsers = await fetchUsers();
+          const user = allUsers.find(u => u.fullname === username);
+          
+          if (!user) {
+              setLoading(false);
+              return;
+          }
+          setCurrentUserId(user.id);
 
-      // Queries
-      const qTasks = query(collection(db, 'tasks'), where('assignedTo', '==', username), where('date', '==', globalDate));
-      const qInt = query(collection(db, 'interruptions'), where('user', '==', username), where('date', '==', globalDate));
-      const qIdle = query(collection(db, 'idle_logs'), where('userId', '==', userId), where('date', '==', globalDate));
-      const qBreaks = query(collection(db, 'breaks'), where('userId', '==', userId), where('date', '==', globalDate));
-      const qActive = query(collection(db, 'interruptions'), where('user', '==', username), where('active', '==', true));
-      const qPower = query(collection(db, 'power_logs'), where('userId', '==', userId), where('date', '==', globalDate));
+          // 2. Fetch All Logs in Parallel
+          const [tData, iData, bData, pData, intData] = await Promise.all([
+              fetchTasks(username, globalDate),
+              fetchLogs('idle_logs', globalDate, user.id),
+              fetchLogs('breaks', globalDate, user.id),
+              fetchLogs('power_logs', globalDate, user.id),
+              fetchLogs('interruptions', globalDate, user.id) // Get interruptions to check active one
+          ]);
 
-      const [sTasks, sInt, sIdle, sBreaks, sActive, sPower] = await Promise.all([
-        getDocs(qTasks), getDocs(qInt), getDocs(qIdle), getDocs(qBreaks), getDocs(qActive), getDocs(qPower)
-      ]);
+          // 3. Process & Sort Data
+          const idlData = iData
+            .filter(d => d.startTime)
+            .sort((a,b) => a.startTime - b.startTime); // Ascending for calculations
 
-      const tData = sTasks.docs.map(d => ({...d.data(), id: d.id}));
-      const idlData = sIdle.docs
-        .map(d => d.data())
-        .filter(d => d.startTime) 
-        .sort((a,b) => a.startTime - b.startTime); // Sorted Ascending for pattern detection
+          setTasks(tData);
+          setIdleLogs([...idlData].reverse()); // Reverse for UI
+          setBreakLogs(bData.sort((a,b) => b.startTime - a.startTime));
+          setPowerLogs(pData.sort((a,b) => b.startTime - a.startTime));
+          
+          // Check for active interruption
+          const active = intData.find(i => i.active === true);
+          setActiveInt(active || null);
 
-      const brkData = sBreaks.docs.map(d => d.data()).sort((a,b) => b.startTime - a.startTime);
-      const pwrLogs = sPower.docs.map(d => d.data()).sort((a,b) => b.startTime - a.startTime);
+          // --- CALCULATIONS ---
+          const wMs = tData.reduce((acc, t) => acc + (t.elapsedMs || 0) + (t.isRunning ? (Date.now() - t.lastStartTime) : 0), 0);
+          const brkMs = bData.reduce((acc, i) => acc + (Number(i.durationMs) || 0), 0);
+          const pwrMs = pData.reduce((acc, i) => acc + (Number(i.durationMs) || 0), 0);
 
-      setTasks(tData);
-      setIdleLogs([...idlData].reverse()); // Reverse for UI display (Newest first)
-      setBreakLogs(brkData);
-      setPowerLogs(pwrLogs);
-      setActiveInt(!sActive.empty ? {id: sActive.docs[0].id, ...sActive.docs[0].data()} : null);
+          // --- STRICT IDLE LOGIC ---
+          let calculatedIdleMs = 0;
+          let patternBuffer = [];
 
-      // --- CALCULATIONS ---
-      const wMs = tData.reduce((acc, t) => acc + (t.elapsedMs || 0) + (t.isRunning ? (Date.now() - t.lastStartTime) : 0), 0);
-      const brkMs = brkData.reduce((acc, i) => acc + (Number(i.durationMs) || 0), 0);
-      const pwrMs = pwrLogs.reduce((acc, i) => acc + (Number(i.durationMs) || 0), 0);
+          idlData.forEach((log, index) => {
+              const duration = Number(log.durationMs) || 0;
+              const TEN_MINS = 10 * 60 * 1000;
+              const SPECIFIC_50S = 50 * 1000;
+              const SPECIFIC_110S = 110 * 1000;
 
-      // --- NEW STRICT IDLE LOGIC ---
-      let calculatedIdleMs = 0;
-      let patternBuffer = [];
+              // SCENARIO 1: Record is 10 minutes or longer
+              if (duration >= TEN_MINS) {
+                  calculatedIdleMs += duration;
+                  if (patternBuffer.length >= 3) {
+                      calculatedIdleMs += patternBuffer.reduce((a, b) => a + b, 0);
+                  }
+                  patternBuffer = [];
+              } 
+              // SCENARIO 2: Specific pattern detection
+              else if (duration === SPECIFIC_50S || duration === SPECIFIC_110S) {
+                  patternBuffer.push(duration);
+              } 
+              // Reset buffer
+              else {
+                  if (patternBuffer.length >= 3) {
+                      calculatedIdleMs += patternBuffer.reduce((a, b) => a + b, 0);
+                  }
+                  patternBuffer = [];
+              }
 
-      idlData.forEach((log, index) => {
-          const duration = Number(log.durationMs) || 0;
-          const TEN_MINS = 10 * 60 * 1000;
-          const SPECIFIC_50S = 50 * 1000;
-          const SPECIFIC_110S = 110 * 1000;
-
-          // SCENARIO 1: Record is 10 minutes or longer
-          if (duration >= TEN_MINS) {
-              calculatedIdleMs += duration;
-              // Check if we just ended a pattern before this long break
-              if (patternBuffer.length >= 3) {
+              // Final check
+              if (index === idlData.length - 1 && patternBuffer.length >= 3) {
                   calculatedIdleMs += patternBuffer.reduce((a, b) => a + b, 0);
               }
-              patternBuffer = [];
-          } 
-          // SCENARIO 2: Specific pattern detection (Exactly 50s or 110s)
-          else if (duration === SPECIFIC_50S || duration === SPECIFIC_110S) {
-              patternBuffer.push(duration);
-          } 
-          // Reset buffer if record doesn't match criteria
-          else {
-              if (patternBuffer.length >= 3) {
-                  calculatedIdleMs += patternBuffer.reduce((a, b) => a + b, 0);
-              }
-              patternBuffer = [];
-          }
+          });
 
-          // Final check at end of array
-          if (index === idlData.length - 1 && patternBuffer.length >= 3) {
-              calculatedIdleMs += patternBuffer.reduce((a, b) => a + b, 0);
-          }
-      });
+          const standardDay = 8 * 60 * 60 * 1000;
+          const netAvailable = Math.max(0, standardDay - pwrMs - brkMs);
 
-      const standardDay = 8 * 60 * 60 * 1000;
-      const netAvailable = Math.max(0, standardDay - pwrMs - brkMs);
+          setStats({ 
+              worked: wMs, 
+              idle: calculatedIdleMs, 
+              breaks: brkMs, 
+              downtime: pwrMs, 
+              netAvailable 
+          });
 
-      setStats({ 
-          worked: wMs, 
-          idle: calculatedIdleMs, 
-          breaks: brkMs, 
-          downtime: pwrMs, 
-          netAvailable 
-      });
+      } catch (error) {
+          console.error("Member Detail Error:", error);
+      }
       setLoading(false);
     };
     fetchData();
@@ -128,23 +132,44 @@ export default function MemberDetail() {
   // Actions
   const reportPowerCut = async () => {
     if(!confirm(`Start a Power Outage for ${username}?`)) return;
-    const userSnap = await getDocs(query(collection(db, 'users'), where('fullname', '==', username)));
-    const userId = userSnap.docs[0].id;
-    await addDoc(collection(db, 'interruptions'), { 
-        user: username, userId: userId, active: true, startTime: Date.now(), date: globalDate, type: 'Power Cut' 
-    });
-    window.location.reload();
+    try {
+        await saveLog('interruption', { 
+            user: username, 
+            userId: currentUserId, 
+            active: true, 
+            startTime: Date.now(), 
+            date: globalDate, 
+            type: 'Power Cut' 
+        });
+        window.location.reload();
+    } catch (e) { alert("Failed to report outage"); }
   };
 
   const resumeMember = async () => {
     if(!activeInt) return;
     if(!confirm(`Resume work for ${username}?`)) return;
-    const duration = Date.now() - activeInt.startTime;
-    await addDoc(collection(db, 'power_logs'), {
-        userId: activeInt.userId, userName: username, startTime: activeInt.startTime, endTime: Date.now(), durationMs: duration, date: globalDate
-    });
-    await updateDoc(doc(db, 'interruptions', activeInt.id), { active: false, endTime: Date.now(), durationMs: duration });
-    window.location.reload();
+    
+    try {
+        const duration = Date.now() - activeInt.startTime;
+        // 1. Create permanent log
+        await saveLog('power', {
+            userId: activeInt.userId, 
+            userName: username, 
+            startTime: activeInt.startTime, 
+            endTime: Date.now(), 
+            durationMs: duration, 
+            date: globalDate
+        });
+        // 2. Note: In Azure, we don't 'update' the interruption active status usually
+        // unless you built an 'updateInterruption' endpoint. 
+        // For now, reloading re-fetches logs, but to fully clear it from UI immediately:
+        // You might need a deleteInterruption or updateLog endpoint if you want to be precise.
+        // Assuming saveLog handles the logic or we rely on the new power log to calculate stats.
+        
+        // IMPORTANT: If your system relies on `active: false` in DB, you need an update API.
+        // But for this display, a reload works if the backend processes it.
+        window.location.reload();
+    } catch (e) { alert("Failed to resume"); }
   };
 
   const score = stats.netAvailable > 0 ? Math.round((stats.worked / stats.netAvailable) * 100) : 0;

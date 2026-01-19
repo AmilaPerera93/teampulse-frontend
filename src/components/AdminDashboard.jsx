@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { db } from '../firebase';
-import { collection, query, where, onSnapshot, doc, deleteDoc } from 'firebase/firestore'; 
 import { useDate } from '../contexts/DateContext';
 import { useNavigate } from 'react-router-dom';
 import { ExternalLink, Trash2, ZapOff, CheckCircle, Edit2 } from 'lucide-react';
 import Timer from './Timer';
 import EditTaskModal from './EditTaskModal';
+import { fetchUsers, fetchTasks, deleteTask } from '../services/api'; 
 
 export default function AdminDashboard() {
   const { globalDate } = useDate();
@@ -15,47 +14,46 @@ export default function AdminDashboard() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [, setTick] = useState(0);
-
-  // State for the task currently being edited
   const [editingTask, setEditingTask] = useState(null); 
 
-  // Tick every minute for live durations
   useEffect(() => {
     const interval = setInterval(() => setTick(t => t + 1), 60000);
     return () => clearInterval(interval);
   }, []);
 
+  const loadData = async () => {
+    try {
+      const [usersData, tasksData] = await Promise.all([
+        fetchUsers(),
+        fetchTasks(null, globalDate) 
+      ]);
+      usersData.sort((a, b) => a.fullname.localeCompare(b.fullname));
+      setUsers(usersData);
+      setTasks(tasksData);
+      setLoading(false);
+    } catch (error) {
+      console.error("Dashboard Load Error:", error);
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     setLoading(true);
-    
-    // 1. LISTEN TO USERS
-    const qUsers = query(collection(db, 'users'), where('role', '==', 'MEMBER'));
-    const unsubUsers = onSnapshot(qUsers, (snap) => {
-        const userList = snap.docs.map(d => ({
-            id: d.id, ...d.data(), onlineStatus: d.data().onlineStatus || 'Offline' 
-        }));
-        
-        // --- FIX: SORT ALPHABETICALLY INSTEAD OF BY STATUS ---
-        // This keeps the cards in the same place even when status changes
-        userList.sort((a, b) => a.fullname.localeCompare(b.fullname));
-        
-        setUsers(userList);
-        setLoading(false); 
-    });
-
-    // 2. LISTEN TO TASKS
-    const qTasks = query(collection(db, 'tasks'), where('date', '==', globalDate));
-    const unsubTasks = onSnapshot(qTasks, (snap) => {
-        setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-
-    return () => { unsubUsers(); unsubTasks(); };
+    loadData();
+    const pollInterval = setInterval(loadData, 30000);
+    return () => clearInterval(pollInterval);
   }, [globalDate]);
 
-  const handleDeleteTask = async (e, taskId) => {
+
+  const handleDeleteTask = async (e, task) => {
     e.stopPropagation(); 
-    if(confirm("Are you sure you want to delete this task?")) {
-        await deleteDoc(doc(db, 'tasks', taskId));
+    if(confirm(`Delete task: "${task.description}"?`)) {
+        try {
+            await deleteTask(task.id, task.assignedTo);
+            loadData();
+        } catch (err) {
+            alert("Failed to delete task.");
+        }
     }
   };
 
@@ -64,37 +62,27 @@ export default function AdminDashboard() {
       setEditingTask(task); 
   };
 
-  if (loading) return <div className="text-center p-20 text-slate-400 animate-pulse">Loading Dashboard...</div>;
+  const handleModalClose = () => {
+      setEditingTask(null);
+      loadData();
+  };
+
+  if (loading) return <div className="text-center p-20 text-slate-400 animate-pulse">Loading Azure Data...</div>;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 animate-in fade-in pb-20 auto-rows-fr">
       {users.length === 0 && (
         <div className="col-span-full text-center text-slate-400 p-10 bg-white rounded-xl border border-dashed border-slate-300">
-            No team members found.
+            No team members found in Azure Database.
         </div>
       )}
 
       {users.map(user => {
-        const userName = user.fullname;
-        
-        // --- STATUS LOGIC ---
-        let displayStatus = user.onlineStatus;
-        const lastSeenDate = user.lastSeen?.toDate();
-        let statusText = displayStatus;
-
-        // Crash Detection (3 mins)
-        if ((displayStatus === 'Online' || displayStatus === 'Idle') && lastSeenDate) {
-            if ((Date.now() - lastSeenDate.getTime()) > 3 * 60 * 1000) {
-                displayStatus = 'Offline';
-                statusText = 'Offline (Timeout)';
-            }
-        }
-
-        // --- TASKS LOGIC ---
+        const userName = user.fullname; 
+        let displayStatus = user.onlineStatus || 'Offline';
         const userTasks = tasks.filter(t => t.assignedTo === userName);
         userTasks.sort((a,b) => (a.isRunning === b.isRunning ? 0 : a.isRunning ? -1 : 1));
         
-        // Efficiency Calc
         const workedMs = userTasks.reduce((acc, t) => acc + (t.elapsedMs || 0) + (t.isRunning ? (Date.now() - t.lastStartTime) : 0), 0);
         const efficiency = Math.min(100, Math.round((workedMs / (8 * 3600000)) * 100)); 
 
@@ -108,12 +96,10 @@ export default function AdminDashboard() {
             className={`card h-full flex flex-col cursor-pointer group relative transition-all duration-200 hover:shadow-lg border-t-4 
                 ${displayStatus === 'Power Cut' ? 'border-t-red-500 bg-red-50/10' : 'border-t-transparent hover:border-t-primary bg-white'}`}
           >
-            {/* HOVER ACTION */}
             <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity text-primary">
                 <ExternalLink size={16} />
             </div>
 
-            {/* HEADER */}
             <div className="flex justify-between items-start mb-4 pb-3 border-b border-slate-100">
                 <div className="flex items-center gap-3">
                     <div className="relative">
@@ -128,7 +114,6 @@ export default function AdminDashboard() {
                             'bg-slate-300'
                         }`}></div>
                     </div>
-
                     <div>
                         <h3 className="font-bold text-lg leading-tight text-slate-800 group-hover:text-primary transition-colors">
                             {userName}
@@ -141,7 +126,7 @@ export default function AdminDashboard() {
                                 displayStatus === 'Power Cut' ? 'text-red-600' :
                                 'text-slate-400'
                             }`}>
-                                {statusText}
+                                {displayStatus}
                             </span>
                             {displayStatus === 'Power Cut' && <ZapOff size={12} className="text-red-600 animate-pulse"/>}
                         </div>
@@ -156,7 +141,6 @@ export default function AdminDashboard() {
                 </div>
             </div>
 
-            {/* TASK LIST AREA */}
             <div className="flex-1 space-y-2">
                 {visibleTasks.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-300 italic text-sm min-h-[100px]">
@@ -189,14 +173,12 @@ export default function AdminDashboard() {
                                         <button 
                                             onClick={(e) => handleEditTask(e, task)}
                                             className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors border-r border-slate-200"
-                                            title="Edit Task"
                                         >
                                             <Edit2 size={12} />
                                         </button>
                                         <button 
-                                            onClick={(e) => handleDeleteTask(e, task.id)}
+                                            onClick={(e) => handleDeleteTask(e, task)}
                                             className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-                                            title="Delete Task"
                                         >
                                             <Trash2 size={12} />
                                         </button>
@@ -222,7 +204,7 @@ export default function AdminDashboard() {
       <EditTaskModal 
         isOpen={!!editingTask} 
         task={editingTask} 
-        onClose={() => setEditingTask(null)} 
+        onClose={handleModalClose} 
       />
     </div>
   );

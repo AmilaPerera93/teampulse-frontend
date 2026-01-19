@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { db } from '../firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { fetchUsers, fetchTasks, fetchLogs } from '../services/api'; // Azure API
 import { useDate } from '../contexts/DateContext';
-import { Clock, CheckCircle, Coffee, Calendar, ArrowLeft, ChevronRight, ChevronLeft, User, Briefcase } from 'lucide-react';
+import { Clock, CheckCircle, Coffee, Calendar, ArrowLeft, ChevronRight, ChevronLeft, Briefcase } from 'lucide-react';
 
 // Helper: Format Milliseconds to HH:MM
 const formatHours = (ms) => {
@@ -31,31 +30,36 @@ export default function MorningMeeting() {
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
-      // 1. Get Members
-      const uSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'MEMBER')));
-      const users = uSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      try {
+          // 1. Fetch All Data in Parallel via Azure API
+          const [allUsers, allTasks, allBreaks] = await Promise.all([
+              fetchUsers(),
+              fetchTasks(null, globalDate), // Null user = fetch all tasks
+              fetchLogs('breaks', globalDate) // Generic log fetcher
+          ]);
 
-      // 2. Get Data
-      const tSnap = await getDocs(query(collection(db, 'tasks'), where('date', '==', globalDate)));
-      const bSnap = await getDocs(query(collection(db, 'breaks'), where('date', '==', globalDate)));
+          // 2. Filter Members only
+          const members = allUsers.filter(u => u.role === 'MEMBER');
 
-      const tasks = tSnap.docs.map(d => d.data());
-      const breaks = bSnap.docs.map(d => d.data());
+          // 3. Aggregate Data
+          const data = members.map(user => {
+            const userTasks = allTasks.filter(t => t.assignedTo === user.fullname);
+            const userBreaks = allBreaks.filter(b => b.userId === user.id);
+            const totalWorkMs = userTasks.reduce((acc, t) => acc + (t.elapsedMs || 0), 0);
+            
+            // Sort: Done first
+            userTasks.sort((a,b) => (a.status === 'Done' ? -1 : 1));
 
-      // 3. Aggregate
-      const data = users.map(user => {
-        const userTasks = tasks.filter(t => t.assignedTo === user.fullname);
-        const userBreaks = breaks.filter(b => b.userId === user.id);
-        const totalWorkMs = userTasks.reduce((acc, t) => acc + (t.elapsedMs || 0), 0);
-        
-        // Sort: Done first
-        userTasks.sort((a,b) => (a.status === 'Done' ? -1 : 1));
+            return { ...user, tasks: userTasks, breaks: userBreaks, totalWorkMs };
+          });
 
-        return { ...user, tasks: userTasks, breaks: userBreaks, totalWorkMs };
-      });
+          // Sort users alphabetically
+          data.sort((a, b) => a.fullname.localeCompare(b.fullname));
+          setReport(data);
 
-      data.sort((a, b) => a.fullname.localeCompare(b.fullname));
-      setReport(data);
+      } catch (error) {
+          console.error("Meeting Data Error:", error);
+      }
       setLoading(false);
     };
     fetchData();
@@ -131,10 +135,10 @@ export default function MorningMeeting() {
                     </div>
 
                     {selectedUser.tasks.length === 0 ? (
-                         <div className="h-64 flex flex-col items-center justify-center text-slate-300 border-2 border-dashed border-slate-100 rounded-2xl">
+                          <div className="h-64 flex flex-col items-center justify-center text-slate-300 border-2 border-dashed border-slate-100 rounded-2xl">
                             <Briefcase size={48} className="mb-4 opacity-20"/>
                             <p className="text-lg font-medium">No tasks recorded.</p>
-                         </div>
+                          </div>
                     ) : (
                         <div className="space-y-4">
                             {selectedUser.tasks.map((task, i) => (

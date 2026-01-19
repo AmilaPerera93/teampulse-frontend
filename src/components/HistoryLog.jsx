@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { db } from '../firebase';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { fetchHistory } from '../services/api'; // Azure API Bridge
 import { useAuth } from '../contexts/AuthContext';
-import { Calendar, Clock, ZapOff, Coffee, ChevronDown, CheckCircle, Activity, BarChart3, AlertCircle } from 'lucide-react';
+import { Calendar, Clock, ZapOff, Coffee, ChevronDown, CheckCircle, Activity } from 'lucide-react';
 
 // --- HELPER: Format Milliseconds to HH:MM:SS ---
 const formatMs = (ms) => {
@@ -29,102 +28,74 @@ export default function HistoryLog() {
 
   useEffect(() => {
     if (!currentUser) return;
-    setLoading(true);
+    
+    const loadData = async () => {
+        setLoading(true);
+        // Calculate 7 days ago
+        const d = new Date();
+        d.setDate(d.getDate() - 7);
+        const dateLimit = d.toISOString().split('T')[0];
 
-    // 1. SAFE DATE CALCULATION (Last 7 Days)
-    const d = new Date();
-    d.setDate(d.getDate() - 7);
-    const dateLimit = d.toISOString().split('T')[0]; // YYYY-MM-DD
+        try {
+            // Fetch everything from Azure in one go
+            const data = await fetchHistory(currentUser.id, currentUser.fullname, dateLimit);
+            
+            // --- DATA GROUPING LOGIC ---
+            const grouped = {};
+            
+            const initDate = (date) => {
+                if (!grouped[date]) {
+                    grouped[date] = { 
+                        date, 
+                        worked: 0, 
+                        breaks: 0, 
+                        power: 0, 
+                        taskList: [], 
+                        breakList: [], 
+                        powerList: [] 
+                    };
+                }
+            };
 
-    // 2. QUERIES
-    // Note: If you still see "Index Needed" in console, click the link!
-    const qTasks = query(
-        collection(db, 'tasks'), 
-        where('assignedTo', '==', currentUser.fullname),
-        where('date', '>=', dateLimit)
-    );
-
-    const qBreaks = query(
-        collection(db, 'breaks'), 
-        where('userId', '==', currentUser.id),
-        where('date', '>=', dateLimit)
-    );
-
-    const qPower = query(
-        collection(db, 'power_logs'), 
-        where('userId', '==', currentUser.id),
-        where('date', '>=', dateLimit)
-    );
-
-    // 3. DATA PROCESSING
-    let tasksData = [];
-    let breaksData = [];
-    let powerData = [];
-
-    const processData = () => {
-        const grouped = {};
-
-        // Helper to ensure day object exists
-        const initDate = (date) => {
-            if (!grouped[date]) {
-                grouped[date] = { 
-                    date, 
-                    worked: 0, 
-                    breaks: 0, 
-                    power: 0, 
-                    taskList: [], 
-                    breakList: [], 
-                    powerList: [] 
-                };
+            // Process Tasks
+            if (data.tasks) {
+                data.tasks.forEach(t => { 
+                    initDate(t.date); 
+                    grouped[t.date].worked += (t.elapsedMs || 0); 
+                    grouped[t.date].taskList.push(t); 
+                });
             }
-        };
 
-        // --- TASKS ---
-        tasksData.forEach(t => {
-            if (!t.date) return;
-            initDate(t.date);
-            grouped[t.date].worked += (t.elapsedMs || 0);
-            grouped[t.date].taskList.push(t);
-        });
+            // Process Breaks
+            if (data.breaks) {
+                data.breaks.forEach(b => { 
+                    initDate(b.date); 
+                    grouped[b.date].breaks += (b.durationMs || 0); 
+                    grouped[b.date].breakList.push(b); 
+                });
+            }
 
-        // --- BREAKS ---
-        breaksData.forEach(b => {
-            if (!b.date) return;
-            initDate(b.date);
-            grouped[b.date].breaks += (b.durationMs || 0);
-            grouped[b.date].breakList.push(b);
-        });
+            // Process Power Cuts
+            if (data.power) {
+                data.power.forEach(p => { 
+                    initDate(p.date); 
+                    grouped[p.date].power += (p.durationMs || 0); 
+                    grouped[p.date].powerList.push(p); 
+                });
+            }
 
-        // --- POWER CUTS ---
-        powerData.forEach(p => {
-            if (!p.date) return;
-            initDate(p.date);
-            grouped[p.date].power += (p.durationMs || 0);
-            grouped[p.date].powerList.push(p);
-        });
+            // Sort: Newest First
+            const sorted = Object.values(grouped).sort((a, b) => new Date(b.date) - new Date(a.date));
+            setHistory(sorted);
 
-        // SORT: Newest First
-        const sorted = Object.values(grouped).sort((a, b) => new Date(b.date) - new Date(a.date));
-        setHistory(sorted);
+        } catch (e) { 
+            console.error("Error loading history:", e); 
+        }
         setLoading(false);
     };
 
-    // 4. LISTENERS
-    const unsubTasks = onSnapshot(qTasks, (snap) => {
-        tasksData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        processData();
-    });
-    const unsubBreaks = onSnapshot(qBreaks, (snap) => {
-        breaksData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        processData();
-    });
-    const unsubPower = onSnapshot(qPower, (snap) => {
-        powerData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        processData();
-    });
-
-    return () => { unsubTasks(); unsubBreaks(); unsubPower(); };
-  }, [currentUser.id, currentUser.fullname]);  
+    loadData();
+  }, [currentUser.id, currentUser.fullname]);
 
   if (loading) return <div className="p-20 text-center text-slate-400 animate-pulse">Loading History...</div>;
 
@@ -273,7 +244,7 @@ export default function HistoryLog() {
   );
 }
 
-// Clean UI Component for Metrics
+// Clean UI Component for Metrics (Preserved from original)
 function MetricPill({ icon: Icon, label, value, color }) {
     return (
         <div className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border min-w-[130px] ${color}`}>

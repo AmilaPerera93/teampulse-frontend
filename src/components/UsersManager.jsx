@@ -1,23 +1,26 @@
 import React, { useEffect, useState } from 'react';
-import { db } from '../firebase';
-import { collection, onSnapshot, addDoc, deleteDoc, doc, query, where, getDocs } from 'firebase/firestore';
 import { Trash2, UserPlus, Shield, User, KeyRound, AlertCircle } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { fetchUsers, createUser, deleteUser, resetPassword } from '../services/api';
 
 export default function UsersManager() {
   const [users, setUsers] = useState([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
-  const { resetUserPassword } = useAuth();
   
   const [formData, setFormData] = useState({ fullname: '', username: '', password: '', role: 'MEMBER' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const loadUsers = async () => {
+    try {
+        const data = await fetchUsers();
+        setUsers(data);
+    } catch (e) { console.error("Load users failed", e); }
+  };
+
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'users'), (snap) => {
-      setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-    return () => unsub();
+    loadUsers();
+    const interval = setInterval(loadUsers, 30000); // Poll every 30s
+    return () => clearInterval(interval);
   }, []);
 
   const handleCreate = async (e) => {
@@ -30,41 +33,35 @@ export default function UsersManager() {
     
     setLoading(true);
     try {
-        // Check for duplicate username
-        const q = query(collection(db, 'users'), where('username', '==', formData.username));
-        const snap = await getDocs(q);
-        if(!snap.empty) {
-            setError("Username already taken.");
-            setLoading(false);
-            return;
-        }
-
-        await addDoc(collection(db, 'users'), {
+        await createUser({
             ...formData,
-            createdAt: new Date().toISOString(),
-            onlineStatus: 'Offline' 
+            onlineStatus: 'Offline',
+            lastSeen: new Date().toISOString()
         });
         
         setIsFormOpen(false);
         setFormData({ fullname: '', username: '', password: '', role: 'MEMBER' });
+        loadUsers();
     } catch (err) {
-        setError("Failed to create user.");
-        console.error(err);
+        setError("Failed to create user (Username might be taken).");
     }
     setLoading(false);
   };
 
   const handleDelete = async (id, name) => {
-    if (confirm(`Are you sure you want to delete ${name}? This cannot be undone.`)) {
-      await deleteDoc(doc(db, 'users', id));
+    if (confirm(`Are you sure you want to delete ${name}?`)) {
+      await deleteUser(id);
+      loadUsers();
     }
   };
 
   const handleResetPassword = async (userId, userName) => {
       const newPass = prompt(`Enter a new password for ${userName}:`);
       if (newPass && newPass.length >= 6) {
-          await resetUserPassword(userId, newPass);
-          alert(`Password for ${userName} updated successfully.`);
+          try {
+              await resetPassword(userId, newPass);
+              alert(`Password for ${userName} updated successfully.`);
+          } catch (e) { alert("Failed to reset password."); }
       } else if (newPass) {
           alert("Password must be at least 6 characters.");
       }
@@ -74,15 +71,14 @@ export default function UsersManager() {
     <div className="max-w-6xl mx-auto h-full flex flex-col animate-in fade-in">
       <div className="flex justify-between items-center mb-6">
         <div>
-            <h2 className="text-2xl font-bold text-slate-800">Team Members</h2>
-            <p className="text-sm text-slate-500">Manage access, roles, and credentials.</p>
+            <h2 className="text-2xl font-bold text-slate-800">Team Members (Azure)</h2>
+            <p className="text-sm text-slate-500">Manage access and credentials.</p>
         </div>
         <button onClick={() => setIsFormOpen(!isFormOpen)} className="btn btn-primary shadow-lg shadow-indigo-100">
             <UserPlus size={18} className="mr-2" /> Add Member
         </button>
       </div>
 
-      {/* CREATE USER FORM */}
       {isFormOpen && (
         <div className="bg-white p-6 rounded-xl shadow-xl border border-slate-100 mb-8 animate-in slide-in-from-top-4 relative overflow-hidden">
             <div className="absolute top-0 left-0 w-1 h-full bg-primary"></div>
@@ -125,7 +121,6 @@ export default function UsersManager() {
         </div>
       )}
 
-      {/* USERS TABLE */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm flex-1">
         <table className="w-full text-left border-collapse">
             <thead>
@@ -175,11 +170,6 @@ export default function UsersManager() {
                         </td>
                     </tr>
                 ))}
-                {users.length === 0 && (
-                    <tr>
-                        <td colSpan="5" className="p-10 text-center text-slate-400 italic">No users found. Create one to get started.</td>
-                    </tr>
-                )}
             </tbody>
         </table>
       </div>
