@@ -40,10 +40,10 @@ export default function AdminDashboard() {
   useEffect(() => {
     setLoading(true);
     loadData();
-    const pollInterval = setInterval(loadData, 30000);
+    // FIXED: Changed from 30000ms to 5000ms for real-time status updates
+    const pollInterval = setInterval(loadData, 5000);
     return () => clearInterval(pollInterval);
   }, [globalDate]);
-
 
   const handleDeleteTask = async (e, task) => {
     e.stopPropagation(); 
