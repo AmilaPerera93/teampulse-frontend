@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Trash2, UserPlus, Shield, User, KeyRound, AlertCircle } from 'lucide-react';
-import { fetchUsers, createUser, deleteUser, resetPassword } from '../services/api';
+import { fetchUsers, createUser, deleteUser, resetUserPassword as resetPassword } from '../services/api';
 
 export default function UsersManager() {
   const [users, setUsers] = useState([]);
