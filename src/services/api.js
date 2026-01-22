@@ -1,7 +1,9 @@
+
+import.meta.env.VITE_API_BASE_URL
 // ==========================================
 // 1. BASE CONFIGURATION
 // ==========================================
-const API_BASE = "https://teampulse-api-backend-prod.azurewebsites.net/api";
+const API_BASE = VITE_API_BASE_URL;
 
 // --- HELPER: Handle Responses ---
 async function handleResponse(response) {
@@ -31,6 +33,15 @@ export async function login(credentials) {
 }
 
 export const loginUser = login;
+
+export async function validateToken(sessionToken) {
+    const res = await fetch(`${API_BASE}/validateToken`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionToken })
+    });
+    return handleResponse(res);
+}
 
 export async function fetchUsers() {
     const res = await fetch(`${API_BASE}/getUsers`);

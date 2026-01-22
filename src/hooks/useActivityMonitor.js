@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { sendHeartbeat, saveLog } from '../services/api';
 
-const IDLE_THRESHOLD = 2 * 1000;  
+const IDLE_THRESHOLD = 120 * 1000;  
 const HEARTBEAT_INTERVAL = 5 * 60 * 1000; 
 
 export function useActivityMonitor(user) {
@@ -25,8 +25,8 @@ export function useActivityMonitor(user) {
     if (!idleStartTime.current || !userRef.current?.id) return;
     const duration = Date.now() - idleStartTime.current;
     
-    // Only log if idle time is more than 6 seconds
-    if (duration > 6000) {
+    // Only log if idle time is more than 2 minutes
+    if (duration > 120000) {
       try {
         await saveLog('idle', {
           userId: userRef.current.id,
