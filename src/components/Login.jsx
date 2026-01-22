@@ -1,14 +1,36 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { Zap, Shield } from 'lucide-react';
+import { validateToken } from '../services/api';
 
 export default function Login() {
-  const { login, loading } = useAuth();
+  const { login, loading, setUser } = useAuth();
   const navigate = useNavigate();
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminUser, setAdminUser] = useState('');
   const [adminPass, setAdminPass] = useState('');
+
+  // Auto-login with token from desktop app
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('token');
+    
+    if (token) {
+      validateToken(token)
+        .then(data => {
+          if (data.success) {
+            // Set user context/session
+            localStorage.setItem('user', JSON.stringify(data.user));
+            if (setUser) setUser(data.user);
+            navigate('/'); // Navigate to dashboard
+          }
+        })
+        .catch(err => {
+          console.error('Token validation failed:', err);
+        });
+    }
+  }, [navigate, setUser]);
 
   const handleAdminLogin = async (e) => {
       e.preventDefault();
